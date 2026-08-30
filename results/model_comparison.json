@@ -1,0 +1,7 @@
+{
+  "naive_baseline_rmse_kmh": 37.48908233642578,
+  "cnn_val_rmse_kmh": 28.413469711748373,
+  "lstm_val_rmse_kmh": 28.997912225597023,
+  "cnn_improvement_over_naive_pct": 24.208684039251562,
+  "lstm_improvement_over_naive_pct": 22.649716842447663
+}

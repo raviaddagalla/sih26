@@ -1,0 +1,38 @@
+{
+  "Vw1": {
+    "gravity_magnitude_mean": 9.806596894354115,
+    "gravity_magnitude_std": 2.1840249127228474e-05,
+    "accel_bias_x": -0.010203496776714203,
+    "accel_bias_y": -0.025892122484860326,
+    "accel_bias_z": 9.845950380933775,
+    "accel_noise_x": 0.2856678392456093,
+    "accel_noise_y": 0.2706635294494366,
+    "accel_noise_z": 0.09302252842426761,
+    "gyro_bias_yaw": -0.0018930601680015625,
+    "gyro_bias_pitch": 0.004411247313928501,
+    "gyro_bias_roll": -0.0020844793905059585,
+    "gyro_noise_yaw": 0.013856611806375402,
+    "gyro_noise_pitch": 0.029276843213231096,
+    "gyro_noise_roll": 0.028670917519431623,
+    "duration_s": 2047.5,
+    "n_samples": 20476
+  },
+  "Vw15": {
+    "gravity_magnitude_mean": 9.806597887948115,
+    "gravity_magnitude_std": 1.6732304228603516e-05,
+    "accel_bias_x": -0.009960579710144926,
+    "accel_bias_y": -0.011256231884057971,
+    "accel_bias_z": 9.846820000000001,
+    "accel_noise_x": 0.18913419558290978,
+    "accel_noise_y": 0.225981847540207,
+    "accel_noise_z": 0.08051790838698243,
+    "gyro_bias_yaw": -0.000819855072463768,
+    "gyro_bias_pitch": 0.001722173913043478,
+    "gyro_bias_roll": -0.0004489130434782608,
+    "gyro_noise_yaw": 0.009355209971036695,
+    "gyro_noise_pitch": 0.03222406879596144,
+    "gyro_noise_roll": 0.0194109805389937,
+    "duration_s": 137.9,
+    "n_samples": 1380
+  }
+}

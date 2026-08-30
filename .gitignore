@@ -1,0 +1,8 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+data/processed/reference_cache.pkl
+data/processed/*.npy
+data/processed/*.pkl
+scratch/
