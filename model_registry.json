@@ -378,5 +378,39 @@
     "metrics": {
       "val_rmse": 6.290853218875485
     }
+  },
+  "cnn_feature_c-india-finetuned": {
+    "model_id": "cnn_feature_c-india-finetuned",
+    "model_type": "VelocityCNNSetC",
+    "version": "cnn_feature_c-india-finetuned_v1",
+    "features": [
+      "Linear Accel X",
+      "Linear Accel Y",
+      "Linear Accel Z",
+      "Gyroscope Yaw",
+      "Gyroscope Pitch",
+      "Gyroscope Roll"
+    ],
+    "window_length": 20,
+    "target_unit": "m/s",
+    "validation_rmse": 5.850684540676294,
+    "test_rmse": null,
+    "training_seed": 42,
+    "artifact_path": "D:\\Nandhu\\dead reckoning\\idr-project\\models\\cnn_feature_c-india-finetuned\\cnn_feature_c-india-finetuned.pt",
+    "trained_on_corrected_data": true,
+    "feature_set": "C",
+    "normalization_version": "corrected_v1",
+    "architecture": "VelocityCNNSetC(\n  (conv1): Conv1d(6, 32, kernel_size=(3,), stride=(1,), padding=(1,))\n  (conv2): Conv1d(32, 64, kernel_size=(3,), stride=(1,), padding=(1,))\n  (fc1): Linear(in_features=64, out_features=64, bias=True)\n  (dropout): Dropout(p=0.2, inplace=False)\n  (fc2): Linear(in_features=64, out_features=1, bias=True)\n)",
+    "param_count": 11041,
+    "optimizer": "Adam",
+    "learning_rate": 0.001,
+    "batch_size": 128,
+    "epochs": 200,
+    "loss": "MSE",
+    "normalization_key": "corrected_v1",
+    "metrics": {
+      "val_rmse": 5.850684540676294
+    },
+    "note": "Fine-tuned on local Indian CSV data. Convolutional/Recurrent layers frozen."
   }
 }
