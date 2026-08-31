@@ -124,6 +124,56 @@
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw15/V-Vw15.csv",
       "has_can_velocity": true,
       "purpose": "Bias/noise estimation for EKF process noise"
+    },
+    "T1": {
+      "driver": "F",
+      "phone_model": "Motorola Moto G7 Power",
+      "road_types": ["France", "mixed"],
+      "split": "train",
+      "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T1.csv",
+      "v_file": null,
+      "has_can_velocity": false,
+      "note": "No matching V- file exists. GPS Speed used as velocity ground truth."
+    },
+    "T4": {
+      "driver": "F",
+      "phone_model": "Motorola Moto G7 Power",
+      "road_types": ["France", "mixed"],
+      "split": "train",
+      "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T4.csv",
+      "v_file": null,
+      "has_can_velocity": false,
+      "note": "No matching V- file exists. GPS Speed used as velocity ground truth."
+    },
+    "T7": {
+      "driver": "F",
+      "phone_model": "Motorola Moto G7 Power",
+      "road_types": ["France", "mixed"],
+      "split": "train",
+      "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T7.csv",
+      "v_file": null,
+      "has_can_velocity": false,
+      "note": "No matching V- file exists. GPS Speed used as velocity ground truth."
+    },
+    "T9": {
+      "driver": "F",
+      "phone_model": "Motorola Moto G7 Power",
+      "road_types": ["France", "mixed"],
+      "split": "val",
+      "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T9.csv",
+      "v_file": null,
+      "has_can_velocity": false,
+      "note": "No matching V- file exists. GPS Speed used as velocity ground truth."
+    },
+    "A9": {
+      "driver": "A",
+      "phone_model": "Huawei P20 Pro",
+      "road_types": ["motorway", "mixed"],
+      "split": "train",
+      "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-A9.csv",
+      "v_file": null,
+      "has_can_velocity": false,
+      "note": "No matching V- file exists. GPS Speed used as velocity ground truth."
     }
   },
   "feature_sets": {

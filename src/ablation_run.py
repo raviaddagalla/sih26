@@ -9,18 +9,9 @@ import pandas as pd
 from pathlib import Path
 
 # Add project root to path so we can import modules
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from models_lib import VelocityCNN, apply_random_rotation
-from ekf import EKF
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6378137.0
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
-    c = 2 * np.arcsin(np.sqrt(a))
-    return R * c
+from benchmark_core import evaluate_blackout_window
+import dataset
 
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -44,9 +35,6 @@ def get_norm_stats():
 def evaluate_drift(model, use_zupt):
     model.eval()
     
-    # We will run a multi-window drift test on the test set
-    import dataset
-    # We'll just run drift on trip T2 (the hard rotation trip)
     trip_id = "T2"
     sync_df = dataset.load_synced_trip(trip_id)
     if sync_df is None or len(sync_df) == 0:
@@ -57,9 +45,9 @@ def evaluate_drift(model, use_zupt):
         return 0, 0
         
     X_tensor = torch.tensor(windows['raw'], dtype=torch.float32, device=DEVICE)
-    # Normalize it!
     means, stds = get_norm_stats()
     X_tensor = (X_tensor - means) / stds
+    
     with torch.no_grad():
         vel_preds, stat_logits = model(X_tensor)
         vel_preds = vel_preds.cpu().numpy()
@@ -68,42 +56,35 @@ def evaluate_drift(model, use_zupt):
     if use_zupt:
         vel_preds[stat_probs > 0.95] = 0.0
         
-    windows['velocity'] = vel_preds
+    dt_seconds = 1.0
+    duration_s = 60
+    duration_steps = int(duration_s / dt_seconds)
     
     drifts = []
-    # Test random windows of 60s
-    import random
-    random.seed(42)
-    max_start = len(windows['raw']) - 600 # 60 seconds at 10Hz
+    
+    max_start = len(windows['raw']) - duration_steps
     if max_start > 0:
-        for _ in range(15): # 15 random windows
-            start = random.randint(0, max_start)
-            end = start + 600
+        for seed in [42, 123, 2024]:
+            import random
+            random.seed(seed)
+            np.random.seed(seed)
+            valid_starts = list(range(0, max_start))
+            picks = np.random.choice(valid_starts, size=min(15, len(valid_starts)), replace=False)
             
-            w_vel = vel_preds[start:end]
-            w_gyro = windows['raw'][start:end, -1, 6] # approx gyro Z
-            w_lat = windows['lat'][start:end]
-            w_lon = windows['lon'][start:end]
-            
-            init_lat, init_lon = w_lat[0], w_lon[0]
-            init_heading = windows['heading'][0] * np.pi / 180.0
-            if np.isnan(init_heading):
-                init_heading = 0.0
-                
-            ekf = EKF(init_lat, init_lon, init_heading)
-            est_lat, est_lon = [], []
-            for j in range(600):
-                ekf.predict(0.1, w_vel[j], w_gyro[j])
-                lat, lon = ekf.get_latlon()
-                est_lat.append(lat)
-                est_lon.append(lon)
-                
-            true_dist = haversine(init_lat, init_lon, w_lat[-1], w_lon[-1])
-            est_dist = haversine(init_lat, init_lon, est_lat[-1], est_lon[-1])
-            error_m = haversine(w_lat[-1], w_lon[-1], est_lat[-1], est_lon[-1])
-            
-            if true_dist > 50:
-                drifts.append(error_m / true_dist * 100.0)
+            for start_idx in picks:
+                res = evaluate_blackout_window(
+                    pred_velocity=vel_preds[start_idx : start_idx + duration_steps],
+                    gyro_yaw_rate=windows['gyro_z'][start_idx : start_idx + duration_steps],
+                    gt_lat=windows['lat'][start_idx : start_idx + duration_steps],
+                    gt_lon=windows['lon'][start_idx : start_idx + duration_steps],
+                    gt_heading_deg=windows['heading'][start_idx : start_idx + duration_steps],
+                    start_idx=start_idx,
+                    duration_steps=duration_steps,
+                    dt_seconds=dt_seconds,
+                    min_reference_distance_m=300.0
+                )
+                if res is not None:
+                    drifts.append(res["ekf_drift_pct"])
                 
     if not drifts:
         return 0, 0
@@ -127,8 +108,7 @@ def run_ablation():
     configs = [
         {"name": "Baseline", "use_zupt": False, "use_aug": False, "use_pinn": False},
         {"name": "+ ZUPT", "use_zupt": True, "use_aug": False, "use_pinn": False},
-        {"name": "+ Domain Aug", "use_zupt": True, "use_aug": True, "use_pinn": False},
-        {"name": "+ PINN Loss", "use_zupt": True, "use_aug": True, "use_pinn": True}
+        {"name": "+ Domain Aug", "use_zupt": True, "use_aug": True, "use_pinn": False}
     ]
     
     results = []

@@ -27,6 +27,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import common
+from benchmark_core import evaluate_blackout_window
 from models_lib import (VelocityCNN, VelocityCNNSetC, VelocityGRU,
                         VelocityTCN, window_to_features)
 
@@ -159,39 +160,6 @@ def trip_metrics_by_ids(y, p, trip_id):
 # ---------------------------------------------------------------------------
 # Dead reckoning benchmark
 # ---------------------------------------------------------------------------
-def haversine(lon1, lat1, lon2, lat2):
-    R = 6371000.0
-    p1, p2 = np.radians(lat1), np.radians(lat2)
-    dlat = p2 - p1
-    dlon = np.radians(lon2 - lon1)
-    a = np.sin(dlat / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlon / 2) ** 2
-    return 2 * R * np.arcsin(np.sqrt(a))
-
-
-def dead_reckon(vels, gyro_z, ref_lat, ref_lon, ref_heading, init_lat,
-                init_lon, init_heading_deg):
-    """
-    Deterministic dead reckoning from outage state (init_lat/lon/heading).
-    vels: per-step forward velocity (m/s), gyro_z: yaw rate (rad/s)
-    heading convention: 0 = North, 90 = East.
-    """
-    R = 6378137.0
-    lat = init_lat; lon = init_lon
-    heading = np.radians(init_heading_deg)
-    traj = []
-    for v, gz in zip(vels, gyro_z):
-        dist = v * 1.0  # dt=1.0 s (window stride)
-        heading += gz * 1.0
-        dx = dist * np.sin(heading)  # East step displacement
-        dy = dist * np.cos(heading)  # North step displacement
-        # Increment running lat/lon by the STEP displacement only.
-        lat2 = lat + np.degrees(dy / R)
-        lon2 = lon + np.degrees(dx / (R * np.cos(np.radians(lat))))
-        lat, lon = lat2, lon2
-        traj.append((lat, lon))
-    return np.array(traj)
-
-
 def benchmark_trip(model_id, predict_fn, trip_id, ref_cache, outage_frac=1/3, duration=60):
     d = ref_cache[trip_id]
     n = len(d["raw"])
@@ -214,62 +182,28 @@ def benchmark_trip(model_id, predict_fn, trip_id, ref_cache, outage_frac=1/3, du
     init_head_deg = float(np.array(d["heading"])[start])
     if not np.isfinite(init_head_deg):
         init_head_deg = 0.0
-    init_head_rad = np.radians(init_head_deg)
 
-    est = dead_reckon(vels, gyro_z, ref_lat, ref_lon, init_head_rad,
-                      ref_lat[0], ref_lon[0], init_head_deg)
-
-    ekf = EKF(ref_lat[0], ref_lon[0], init_head_rad)
-    ekf_trajectory = []
-    ekf_errors = []
-    for k in range(duration):
-        v = vels[k]
-        gz = gyro_z[k]
-        ekf.predict(dt=1.0, ml_velocity=v, gyro_yaw_rate=gz)
-        ekf_lat, ekf_lon = ekf.get_latlon()
-        ekf_trajectory.append([ekf_lat, ekf_lon])
-        ekf_errors.append(haversine(ref_lon[k+1], ref_lat[k+1], ekf_lon, ekf_lat))
-        
-    ekf_trajectory = np.array(ekf_trajectory)
-    ekf_errors = np.array(ekf_errors)
-    ekf_final_err = float(ekf_errors[-1])
-    ekf_max_err = float(ekf_errors.max())
-    ekf_mean_err = float(ekf_errors.mean())
-    
-    ref_dist = 0.0
-    errors = []
-    for k in range(duration):
-        ref_dist += haversine(ref_lon[k], ref_lat[k], ref_lon[k+1], ref_lat[k+1])
-        errors.append(haversine(ref_lon[k+1], ref_lat[k+1], est[k, 1], est[k, 0]))
-        
-    ekf_drift_pct = (ekf_final_err / ref_dist * 100) if ref_dist > 5 else None
-    
-    errors = np.array(errors)
-    final_err = float(errors[-1])
-    max_err = float(errors.max())
-    mean_err = float(errors.mean())
-    drift_pct = (final_err / ref_dist * 100) if ref_dist > 5 else None
+    res = evaluate_blackout_window(
+        pred_velocity=vels,
+        gyro_yaw_rate=gyro_z,
+        gt_lat=ref_lat,
+        gt_lon=ref_lon,
+        gt_heading_deg=np.array([init_head_deg]*len(ref_lat)), # Used only for [0] inside
+        start_idx=start,
+        duration_steps=duration,
+        dt_seconds=1.0,
+        min_reference_distance_m=0.0 # Force pass for the legacy single-window test
+    )
 
     return {
         "trip": trip_id,
         "outage_start": int(start),
         "outage_duration_s": int(duration),
-        "final_position_error_m": final_err,
-        "max_position_error_m": max_err,
-        "mean_position_error_m": mean_err,
-        "reference_distance_m": float(ref_dist),
-        "drift_pct": drift_pct,
-        "trajectory": est,
-        "ekf_trajectory": ekf_trajectory,
-        "ekf_errors": ekf_errors,
-        "ekf_final_position_error_m": ekf_final_err,
-        "ekf_max_position_error_m": ekf_max_err,
-        "ekf_mean_position_error_m": ekf_mean_err,
-        "ekf_drift_pct": ekf_drift_pct,
-        "errors": errors,
-        "ref_lat": ref_lat, "ref_lon": ref_lon,
-        "vel_pred": vels,
-        "time_off": np.arange(duration),
+        "final_position_error_m": res["open_loop_final_error_m"] if res else None,
+        "reference_distance_m": res["reference_distance_m"] if res else None,
+        "drift_pct": res["open_loop_drift_pct"] if res else None,
+        "ekf_final_position_error_m": res["ekf_final_error_m"] if res else None,
+        "ekf_drift_pct": res["ekf_drift_pct"] if res else None,
     }
 
 

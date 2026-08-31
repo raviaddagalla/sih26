@@ -325,7 +325,7 @@ def main():
 
         model, val_rmse, _ = train_neural(
             model, Xtr, y_train, Xv, y_val, channels=channels,
-            weighted=not args.unweighted, augment=True, name=model_name)
+            weighted=False, augment=True, name=model_name)
 
         # Save artifact
         mdir = common.MODELS_DIR / fname
@@ -345,7 +345,7 @@ def main():
             "learning_rate": LR,
             "batch_size": BATCH_SIZE,
             "epochs": MAX_EPOCHS,
-            "loss": "weighted-MSE(speed)+BCE(stationary)" if not args.unweighted else "MSE(speed)+BCE(stationary)",
+            "loss": "MSE(speed)+BCE(stationary)",
             "normalization_key": "corrected_v1",
             "target_unit": "m/s",
         }

@@ -19,6 +19,8 @@ use these exact statistics.
 from pathlib import Path
 import numpy as np
 import json
+import hashlib
+from datetime import datetime, timezone
 
 PROJECT_ROOT = Path(r"D:\Nandhu\dead reckoning\idr-project")
 DATASET_ROOT = Path(r"D:\Nandhu\dead reckoning\IO-VNBD-master")
@@ -115,6 +117,20 @@ def check_unit(value_mps, max_kmh=216.0):
         f"(exceeds {max_kmh:.0f} km/h in m/s units). Value must be m/s.")
     return v
 
+def get_utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def hash_file(path: str | Path) -> str:
+    if not path or str(path) == "":
+        return "N/A"
+    path = Path(path)
+    if not path.is_file():
+        return "FILE_NOT_FOUND"
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(8192):
+            h.update(chunk)
+    return h.hexdigest()
 
 if __name__ == "__main__":
     print("Common data contract module.")

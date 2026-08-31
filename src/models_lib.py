@@ -289,6 +289,35 @@ def window_to_features(X, raw_inputs=False):
         slope = (v - v.mean(axis=1, keepdims=True)) @ t / denom
         feats.append(slope[:, None])
 
+    # Frequency domain features (FFT)
+    def fft_features(v):
+        fft_vals = np.abs(np.fft.rfft(v, axis=1)) # (N, seq_len//2 + 1)
+        fft_ac = fft_vals[:, 1:] # Skip DC
+        if fft_ac.shape[1] == 0:
+            return np.zeros((v.shape[0], 4), dtype=float)
+            
+        dom_idx = np.argmax(fft_ac, axis=1) + 1
+        dom_mag = np.max(fft_ac, axis=1)
+        energy_low = np.sum(fft_ac[:, :3]**2, axis=1)
+        energy_high = np.sum(fft_ac[:, 3:]**2, axis=1)
+        
+        return np.stack([dom_idx, dom_mag, energy_low, energy_high], axis=1)
+
+    for v in (az, accel_mag):
+        feats.append(fft_features(v))
+
+    # Gated Kinematic Feature: v_est = |a_lat| / |w_yaw|
+    # Approx a_lat = ay, w_yaw = gz
+    w_yaw_abs = np.abs(gz)
+    valid_mask = w_yaw_abs > 0.05
+    v_est = np.zeros_like(ay)
+    np.divide(np.abs(ay), w_yaw_abs, out=v_est, where=valid_mask)
+    v_est_sum = np.sum(v_est, axis=1)
+    v_est_count = np.sum(valid_mask, axis=1)
+    v_est_mean = np.zeros(N)
+    np.divide(v_est_sum, v_est_count, out=v_est_mean, where=(v_est_count > 0))
+    feats.append(v_est_mean[:, None])
+
     Xfeat = np.concatenate(feats, axis=1)
     return Xfeat.astype(np.float32)
 
@@ -311,6 +340,9 @@ FEATURE_NAMES = [
     'gy_jerk_mean', 'gy_jerk_max', 'gz_jerk_mean', 'gz_jerk_max',
     'ax_slope', 'ay_slope', 'az_slope', 'gx_slope', 'gy_slope', 'gz_slope',
     'amag_slope', 'gmag_slope',
+    'az_fft_dom_idx', 'az_fft_dom_mag', 'az_fft_elow', 'az_fft_ehigh',
+    'amag_fft_dom_idx', 'amag_fft_dom_mag', 'amag_fft_elow', 'amag_fft_ehigh',
+    'v_est_gated'
 ]
 
 if __name__ == "__main__":
