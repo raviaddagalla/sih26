@@ -11,6 +11,8 @@ from pathlib import Path
 import common
 import dataset
 from benchmark_core import evaluate_blackout_window
+from fetch_osm_roads import fetch_road_network
+from map_matching import SimpleMapMatcher
 
 PROJECT_ROOT = common.PROJECT_ROOT
 REPORTS_DIR = common.REPORTS_DIR
@@ -49,6 +51,26 @@ def run_benchmark():
         if len(windows['raw']) == 0:
             continue
             
+        road_network_path = PROJECT_ROOT / "data" / "processed" / f"road_network_{trip}.json"
+        if not road_network_path.exists():
+            print(f"Fetching road network for {trip}...")
+            osm_data = fetch_road_network(trip_id=trip)
+        else:
+            with open(road_network_path, 'r') as f:
+                osm_data = json.load(f)
+                
+        if isinstance(osm_data, dict):
+            segments = osm_data.get("segments", [])
+            buildings = osm_data.get("buildings", [])
+        else:
+            segments = osm_data
+            buildings = []
+                
+        from map_matching import HMMMapMatcher, RBPFMapMatcher
+        map_matcher = SimpleMapMatcher(segments)
+        hmm_matcher = HMMMapMatcher(segments)
+        rbpf_matcher = RBPFMapMatcher(segments, buildings)
+            
         # Normalize and predict
         norm = common.load_norm_params()
         X_raw = windows['raw']
@@ -83,7 +105,9 @@ def run_benchmark():
                         start_idx=start_idx,
                         duration_steps=duration_steps,
                         dt_seconds=dt_seconds,
-                        min_reference_distance_m=300.0
+                        min_reference_distance_m=300.0,
+                        map_matcher=map_matcher,
+                        hmm_matcher=hmm_matcher
                     )
                     
                     if res is None:
@@ -136,17 +160,27 @@ def run_benchmark():
                 continue
             
             key = f"{trip}_{dur}s"
+            
+            med_ol = float(dur_df['open_loop_drift_pct'].median())
+            med_ekf = float(dur_df['ekf_drift_pct'].median())
+            med_ekf_mm = float(dur_df['map_matched_ekf_drift_pct'].median())
+            
             summary["stats"][key] = {
                 "count": len(dur_df),
-                "median_drift_pct": float(dur_df['ekf_drift_pct'].median()),
+                "median_drift_pct": med_ekf,
+                "median_map_matched_drift_pct": med_ekf_mm,
                 "mean_drift_pct": float(dur_df['ekf_drift_pct'].mean()),
                 "std_drift_pct": float(dur_df['ekf_drift_pct'].std()),
                 "median_error_m": float(dur_df['ekf_final_error_m'].median()),
                 "low_motion_count": int(dur_df['is_low_motion'].sum())
             }
             
+            delta_pct = med_ekf - med_ekf_mm
+            delta_rel = (delta_pct / med_ekf) * 100 if med_ekf > 0 else 0
+            
             print(f"Trip {trip} | {dur}s blackout | {len(dur_df)} valid | "
-                  f"Median EKF Drift: {dur_df['ekf_drift_pct'].median():.2f}%")
+                  f"OL: {med_ol:.2f}% | EKF: {med_ekf:.2f}% | EKF+MM: {med_ekf_mm:.2f}% "
+                  f"(Delta: {delta_pct:.2f}% abs, {delta_rel:.1f}% rel)")
                   
     with open(REPORTS_DIR / "multi_window_drift_summary.json", "w") as f:
         json.dump(summary, f, indent=2)

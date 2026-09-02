@@ -20,6 +20,8 @@ def evaluate_blackout_window(
     duration_steps: int,
     dt_seconds: float,              
     min_reference_distance_m: float = 300.0,
+    map_matcher = None,
+    hmm_matcher = None,
 ) -> dict | None:
     """
     Evaluates a GNSS-denied window rigorously.
@@ -52,6 +54,9 @@ def evaluate_blackout_window(
     ol_theta = init_heading_rad
     
     # Step through window
+    ekf_traj = []
+    ol_traj = []
+    
     for i in range(duration_steps):
         v = pred_velocity[i]
         omega = gyro_yaw_rate[i]
@@ -64,8 +69,14 @@ def evaluate_blackout_window(
         ol_y += v * np.cos(ol_theta) * dt_seconds
         ol_theta += omega * dt_seconds
         
-    ekf_lat, ekf_lon = ekf.get_latlon()
-    ol_lat, ol_lon = ekf.xy_to_latlon(ol_x, ol_y)
+        ekf_lat, ekf_lon = ekf.get_latlon()
+        ol_lat, ol_lon = ekf.xy_to_latlon(ol_x, ol_y)
+        
+        ekf_traj.append((ekf_lat, ekf_lon))
+        ol_traj.append((ol_lat, ol_lon))
+        
+    ekf_lat, ekf_lon = ekf_traj[-1]
+    ol_lat, ol_lon = ol_traj[-1]
     
     final_gt_lat = gt_lat[-1]
     final_gt_lon = gt_lon[-1]
@@ -74,11 +85,11 @@ def evaluate_blackout_window(
     ekf_final_error_m = haversine(final_gt_lat, final_gt_lon, ekf_lat, ekf_lon)
     open_loop_final_error_m = haversine(final_gt_lat, final_gt_lon, ol_lat, ol_lon)
     
-    # Compute Drift % (No division by zero possible due to min_reference_distance_m gate)
+    # Compute Drift %
     ekf_drift_pct = (ekf_final_error_m / ref_dist_m) * 100.0
     open_loop_drift_pct = (open_loop_final_error_m / ref_dist_m) * 100.0
     
-    return {
+    res = {
         "reference_distance_m": float(ref_dist_m),
         "open_loop_final_error_m": float(open_loop_final_error_m),
         "ekf_final_error_m": float(ekf_final_error_m),
@@ -89,3 +100,20 @@ def evaluate_blackout_window(
         "duration_steps": duration_steps,
         "dt_seconds": dt_seconds
     }
+    
+    if map_matcher is not None and hmm_matcher is not None:
+        mm_ekf_traj = hmm_matcher.match(ekf_traj)
+        mm_ol_traj = hmm_matcher.match(ol_traj)
+        
+        mm_ekf_lat, mm_ekf_lon = mm_ekf_traj[-1]
+        mm_ol_lat, mm_ol_lon = mm_ol_traj[-1]
+        
+        mm_ekf_final_error_m = haversine(final_gt_lat, final_gt_lon, mm_ekf_lat, mm_ekf_lon)
+        mm_ol_final_error_m = haversine(final_gt_lat, final_gt_lon, mm_ol_lat, mm_ol_lon)
+        
+        res["map_matched_ekf_drift_m"] = float(mm_ekf_final_error_m)
+        res["map_matched_ekf_drift_pct"] = float((mm_ekf_final_error_m / ref_dist_m) * 100.0)
+        res["map_matched_dr_drift_m"] = float(mm_ol_final_error_m)
+        res["map_matched_dr_drift_pct"] = float((mm_ol_final_error_m / ref_dist_m) * 100.0)
+        
+    return res

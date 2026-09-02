@@ -345,6 +345,93 @@ FEATURE_NAMES = [
     'v_est_gated'
 ]
 
+# ---------------------------------------------------------------------------
+# MODEL F — Stateful GRU
+# ---------------------------------------------------------------------------
+class StatefulGRU(nn.Module):
+    def __init__(self, in_channels=12, hidden=64, num_layers=2, dropout=0.2):
+        super().__init__()
+        self.in_channels = in_channels
+        self.gru = nn.GRU(
+            input_size=in_channels,
+            hidden_size=hidden,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.fc1 = nn.Linear(hidden, hidden)
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden, 1)
+
+    def forward(self, x, h=None):
+        # x is (batch, seq_len, in_channels)
+        out, h_new = self.gru(x, h)
+        # out is (batch, seq_len, hidden)
+        out_fc = torch.relu(self.fc1(out))
+        out_fc = self.dropout(out_fc)
+        vel = self.fc2(out_fc).squeeze(-1) # (batch, seq_len)
+        return vel, h_new
+
+# ---------------------------------------------------------------------------
+# MODEL G — Stateful CNN-GRU
+# Uses a Causal 1D CNN to extract high-frequency vibration features before GRU
+# ---------------------------------------------------------------------------
+class StatefulCNNGRU(nn.Module):
+    def __init__(self, in_channels=12, cnn_channels=32, hidden=64, num_layers=2, dropout=0.2):
+        super().__init__()
+        self.in_channels = in_channels
+        # Causal CNN to avoid future peeking
+        self.cnn = CausalConv1dBlock(in_channels, cnn_channels, kernel=5, dilation=1)
+        self.gru = nn.GRU(
+            input_size=cnn_channels,
+            hidden_size=hidden,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.fc1 = nn.Linear(hidden, hidden)
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden, 1)
+
+    def forward(self, x, h=None):
+        # x is (batch, seq_len, in_channels)
+        x_cnn = x.permute(0, 2, 1) # (batch, channels, seq_len)
+        x_cnn = self.cnn(x_cnn)
+        x_cnn = x_cnn.permute(0, 2, 1) # (batch, seq_len, cnn_channels)
+        
+        out, h_new = self.gru(x_cnn, h)
+        out_fc = torch.relu(self.fc1(out))
+        out_fc = self.dropout(out_fc)
+        vel = self.fc2(out_fc).squeeze(-1) # (batch, seq_len)
+        return vel, h_new
+
+# ---------------------------------------------------------------------------
+# MODEL H — Filter Parameter Adapter (Data-Driven Covariance)
+# Dynamically estimates measurement noise covariance (R) from IMU
+# ---------------------------------------------------------------------------
+class FilterParameterAdapter(nn.Module):
+    def __init__(self, in_channels=12, hidden_channels=32, dropout=0.2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, hidden_channels, kernel_size=5, padding=2, dilation=1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=5, padding=6, dilation=3),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        self.fc = nn.Linear(hidden_channels, 1) # Predict log(R) for velocity
+
+    def forward(self, x):
+        # x is (batch, seq_len, in_channels)
+        x_cnn = x.permute(0, 2, 1) # (batch, channels, seq_len)
+        features = self.net(x_cnn)
+        features = features.permute(0, 2, 1) # (batch, seq_len, hidden_channels)
+        
+        # We output a scalar per step representing log(variance)
+        log_R = self.fc(features).squeeze(-1) # (batch, seq_len)
+        return log_R
+
 if __name__ == "__main__":
     # Quick sanity check of all models
     X = torch.randn(4, 20, 12)

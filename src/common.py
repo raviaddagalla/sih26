@@ -47,9 +47,11 @@ FEATURE_SET_C_NAMES = [CHANNEL_NAMES[i] for i in FEATURE_SET_C_INDICES]
 
 TARGET_UNIT = "m/s"
 SPLIT_TRIPS = {
-    "train": ["S2", "M", "Vw4", "Vtb5", "A2", "Vw2", "Vw14b"],
+    "train": ["S2", "M", "Vw4", "Vtb5", "A2", "Vw2", "Vw14b",
+              "PVS_1", "PVS_2", "PVS_3", "PVS_4", "PVS_5",
+              "PVS_6", "PVS_7", "A5", "T2"],
     "val":   ["Y1", "Vfa02"],
-    "test":  ["A5", "T2"],
+    "test":  ["PVS_8", "PVS_9"],
 }
 
 # Speed regimes in m/s used for regime-wise evaluation.

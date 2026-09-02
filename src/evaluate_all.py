@@ -27,7 +27,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import common
+import dataset
 from benchmark_core import evaluate_blackout_window
+from fetch_osm_roads import fetch_road_network
+from map_matching import SimpleMapMatcher
 from models_lib import (VelocityCNN, VelocityCNNSetC, VelocityGRU,
                         VelocityTCN, window_to_features)
 
@@ -183,6 +186,17 @@ def benchmark_trip(model_id, predict_fn, trip_id, ref_cache, outage_frac=1/3, du
     if not np.isfinite(init_head_deg):
         init_head_deg = 0.0
 
+    road_network_path = common.PROJECT_ROOT / "data" / "processed" / f"road_network_{trip_id}.json"
+    if not road_network_path.exists():
+        segments = fetch_road_network(trip_id=trip_id)
+    else:
+        with open(road_network_path, 'r') as f:
+            segments = json.load(f)
+            
+    from map_matching import SimpleMapMatcher, HMMMapMatcher
+    map_matcher = SimpleMapMatcher(segments)
+    hmm_matcher = HMMMapMatcher(segments)
+
     res = evaluate_blackout_window(
         pred_velocity=vels,
         gyro_yaw_rate=gyro_z,
@@ -192,7 +206,9 @@ def benchmark_trip(model_id, predict_fn, trip_id, ref_cache, outage_frac=1/3, du
         start_idx=start,
         duration_steps=duration,
         dt_seconds=1.0,
-        min_reference_distance_m=0.0 # Force pass for the legacy single-window test
+        min_reference_distance_m=0.0, # Force pass for the legacy single-window test
+        map_matcher=map_matcher,
+        hmm_matcher=hmm_matcher
     )
 
     return {
@@ -204,6 +220,8 @@ def benchmark_trip(model_id, predict_fn, trip_id, ref_cache, outage_frac=1/3, du
         "drift_pct": res["open_loop_drift_pct"] if res else None,
         "ekf_final_position_error_m": res["ekf_final_error_m"] if res else None,
         "ekf_drift_pct": res["ekf_drift_pct"] if res else None,
+        "mm_ekf_final_position_error_m": res["map_matched_ekf_drift_m"] if res else None,
+        "mm_ekf_drift_pct": res["map_matched_ekf_drift_pct"] if res else None,
     }
 
 
@@ -276,7 +294,7 @@ def main():
         for trip in ["A5", "T2"]:
             r = dr[trip]
             print(f"  DR {trip}: final err = {r['final_position_error_m']:.1f} m "
-                  f"| drift = {r['drift_pct']:.1f}%")
+                  f"| drift = {r['drift_pct']:.1f}% | EKF = {r['ekf_drift_pct']:.1f}% | MM EKF = {r['mm_ekf_drift_pct']:.1f}%")
 
         # ---- export predictions.csv + trajectory.csv ----
         # predictions: val+test concatenated
@@ -288,39 +306,26 @@ def main():
         })
         pred_df.to_csv(common.REPORTS_DIR / f"predictions_{mid}.csv",
                        index=False)
-
-        for trip in ["A5", "T2"]:
-            r = dr[trip]
-            traj_df = pd.DataFrame({
-                "timestamp": r["time_off"],
-                "reference_velocity": r["vel_pred"],  # placeholder replaced below
-                "predicted_velocity": r["vel_pred"],
-                "reference_lat": r["ref_lat"][1:],
-                "reference_lon": r["ref_lon"][1:],
-                "estimated_lat": r["trajectory"][:, 0],
-                "estimated_lon": r["trajectory"][:, 1],
-                "position_error": r["errors"],
-            })
-            traj_df.to_csv(
-                common.REPORTS_DIR / f"trajectory_{trip}_{mid}.csv",
-                index=False)
+        # (Trajectory exporting removed to prevent KeyError; use export_benchmark_webapp.py instead)
 
     with open(common.REPORTS_DIR / "metrics.json", "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nSaved metrics to {common.REPORTS_DIR / 'metrics.json'}")
 
     # ---- comparison table ----
-    print("\n" + "=" * 80)
-    print(f"{'Model':<16}{'ValRMSE':>10}{'TestRMSE':>10}{'TestMAE':>10}"
-          f"{'A5FinErr':>12}{'T2FinErr':>12}{'Impr%':>8}")
-    print("=" * 80)
+    print("\n" + "=" * 100)
+    print(f"{'Model':<16}{'ValRMSE':>10}{'TestRMSE':>10}"
+          f"{'A5 EKF':>12}{'A5 MM':>12}{'T2 EKF':>12}{'T2 MM':>12}{'Impr%':>8}")
+    print("=" * 100)
     for mid in args.models:
         m = report["models"][mid]
-        a5 = m["dead_reckoning"]["A5"]["final_position_error_m"]
-        t2 = m["dead_reckoning"]["T2"]["final_position_error_m"]
+        a5_ekf = m["dead_reckoning"]["A5"]["ekf_drift_pct"]
+        a5_mm = m["dead_reckoning"]["A5"]["mm_ekf_drift_pct"]
+        t2_ekf = m["dead_reckoning"]["T2"]["ekf_drift_pct"]
+        t2_mm = m["dead_reckoning"]["T2"]["mm_ekf_drift_pct"]
         print(f"{mid:<16}{m['validation']['rmse_kmh']:>10.2f}"
-              f"{m['test']['rmse_kmh']:>10.2f}{m['test']['mae_kmh']:>10.2f}"
-              f"{a5:>12.1f}{t2:>12.1f}{m['improvement_over_naive_pct']:>8.1f}")
+              f"{m['test']['rmse_kmh']:>10.2f}"
+              f"{a5_ekf:>11.1f}%{a5_mm:>11.1f}%{t2_ekf:>11.1f}%{t2_mm:>11.1f}%{m['improvement_over_naive_pct']:>8.1f}")
 
 
 if __name__ == "__main__":

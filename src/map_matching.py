@@ -79,36 +79,111 @@ class SimpleMapMatcher:
         road_segments: List of ((lon1, lat1), (lon2, lat2)) tuples representing road geometry.
         """
         self.segments = road_segments
+        if self.segments:
+            from scipy.spatial import cKDTree
+            # Extract midpoints for fast spatial indexing
+            midpoints = []
+            for segment in self.segments:
+                s = segment['start'] if isinstance(segment, dict) else segment[0]
+                e = segment['end'] if isinstance(segment, dict) else segment[1]
+                # s and e are [lat, lon], we want [lon, lat] for the midpoint index
+                lon_mid = (s[1] + e[1]) / 2.0
+                lat_mid = (s[0] + e[0]) / 2.0
+                midpoints.append([lon_mid, lat_mid])
+            self.tree = cKDTree(midpoints)
+        else:
+            self.tree = None
         
-    def snap(self, lat, lon):
+    def snap(self, lat, lon, max_snap_distance_m=50.0):
         """
         Snap a coordinate to the nearest road segment.
         Returns: (snapped_lat, snapped_lon)
         """
-        if not self.segments:
+        if not self.segments or self.tree is None:
             return lat, lon
+            
+        pt = (lon, lat)
+        
+        # Query KDTree for nearest 20 segments
+        k = min(20, len(self.segments))
+        _, idxs = self.tree.query([lon, lat], k=k)
+        if isinstance(idxs, (int, np.integer)):
+            idxs = [idxs]
             
         min_dist = float('inf')
         best_proj = (lon, lat)
         
-        pt = (lon, lat)
-        
-        for segment in self.segments:
-            start, end = segment
+        for idx in idxs:
+            segment = self.segments[idx]
+            s = segment['start'] if isinstance(segment, dict) else segment[0]
+            e = segment['end'] if isinstance(segment, dict) else segment[1]
+            start = (s[1], s[0])
+            end = (e[1], e[0])
             dist, proj = point_to_line_distance(pt, start, end)
             
             if dist < min_dist:
                 min_dist = dist
                 best_proj = proj
                 
-        # Return lat, lon (proj is lon, lat)
+        if min_dist > max_snap_distance_m:
+            return lat, lon
+            
         return best_proj[1], best_proj[0]
-\n
+
+    def snap_with_meta(self, lat, lon, max_snap_distance_m=50.0):
+        """
+        Snap a coordinate to the nearest road segment and return its metadata.
+        Returns: (snapped_lat, snapped_lon, metadata_dict)
+        """
+        if not self.segments or self.tree is None:
+            return lat, lon, {}
+            
+        pt = (lon, lat)
+        k = min(20, len(self.segments))
+        _, idxs = self.tree.query([lon, lat], k=k)
+        if isinstance(idxs, (int, np.integer)):
+            idxs = [idxs]
+            
+        min_dist = float('inf')
+        best_proj = (lon, lat)
+        best_meta = {}
+        
+        for idx in idxs:
+            segment = self.segments[idx]
+            s = segment['start'] if isinstance(segment, dict) else segment[0]
+            e = segment['end'] if isinstance(segment, dict) else segment[1]
+            start = (s[1], s[0])
+            end = (e[1], e[0])
+            dist, proj = point_to_line_distance(pt, start, end)
+            
+            if dist < min_dist:
+                min_dist = dist
+                best_proj = proj
+                best_meta = segment if isinstance(segment, dict) else {}
+                
+        if min_dist > max_snap_distance_m:
+            return lat, lon, {}
+            
+        return best_proj[1], best_proj[0], best_meta
+
 class HMMMapMatcher:
     def __init__(self, road_segments, emission_sigma=10.0, trans_beta=20.0):
         self.segments = road_segments
         self.emission_sigma = emission_sigma
         self.trans_beta = trans_beta
+        
+        if self.segments:
+            from scipy.spatial import cKDTree
+            midpoints = []
+            for segment in self.segments:
+                s = segment['start'] if isinstance(segment, dict) else segment[0]
+                e = segment['end'] if isinstance(segment, dict) else segment[1]
+                lon_mid = (s[1] + e[1]) / 2.0
+                lat_mid = (s[0] + e[0]) / 2.0
+                midpoints.append([lon_mid, lat_mid])
+            self.tree = cKDTree(midpoints)
+        else:
+            self.tree = None
         
     def match(self, trajectory):
         '''
@@ -138,24 +213,41 @@ class HMMMapMatcher:
 
         # Pre-compute projections for all segments for the first point
         pt0 = (trajectory[0][1], trajectory[0][0]) # (lon, lat)
-        for i, segment in enumerate(self.segments):
-            dist, proj = point_to_line_distance(pt0, segment[0], segment[1])
-            # Only consider segments within a reasonable threshold (e.g. 50 meters)
-            if dist > 100.0:
+        
+        # Query KDTree for nearest 50 segments
+        k = min(50, len(self.segments))
+        _, idxs = self.tree.query([pt0[0], pt0[1]], k=k)
+        if isinstance(idxs, (int, np.integer)):
+            idxs = [idxs]
+            
+        for idx in idxs:
+            segment = self.segments[idx]
+            s = segment['start'] if isinstance(segment, dict) else segment[0]
+            e = segment['end'] if isinstance(segment, dict) else segment[1]
+            start = (s[1], s[0]) # (lon, lat)
+            end = (e[1], e[0]) # (lon, lat)
+            dist, proj = point_to_line_distance(pt0, start, end)
+            # Only consider segments within a reasonable threshold (e.g. 500 meters)
+            if dist > 500.0:
                 continue
-            V[0][i] = np.log(emission_prob(dist) + 1e-12)
-            path[i] = [(proj[1], proj[0])] # lat, lon
+            V[0][idx] = np.log(emission_prob(dist) + 1e-12)
+            path[idx] = [(proj[1], proj[0])] # lat, lon
             
         if not V[0]:
             # fallback if nothing is close
             min_dist = float('inf')
-            best_i, best_proj = 0, pt0
-            for i, segment in enumerate(self.segments):
-                dist, proj = point_to_line_distance(pt0, segment[0], segment[1])
+            best_idx, best_proj = 0, pt0
+            for idx in idxs:
+                segment = self.segments[idx]
+                s = segment['start'] if isinstance(segment, dict) else segment[0]
+                e = segment['end'] if isinstance(segment, dict) else segment[1]
+                start = (s[1], s[0])
+                end = (e[1], e[0])
+                dist, proj = point_to_line_distance(pt0, start, end)
                 if dist < min_dist:
-                    min_dist, best_i, best_proj = dist, i, proj
-            V[0][best_i] = 0.0
-            path[best_i] = [(best_proj[1], best_proj[0])]
+                    min_dist, best_idx, best_proj = dist, idx, proj
+            V[0][best_idx] = 0.0
+            path[best_idx] = [(best_proj[1], best_proj[0])]
 
         # Run Viterbi
         for t in range(1, len(trajectory)):
@@ -166,19 +258,33 @@ class HMMMapMatcher:
             
             # Find candidate segments for current point
             candidates = []
-            for i, segment in enumerate(self.segments):
-                dist, proj = point_to_line_distance(pt, segment[0], segment[1])
-                if dist < 100.0:
-                    candidates.append((i, dist, proj))
+            _, idxs = self.tree.query([pt[0], pt[1]], k=k)
+            if isinstance(idxs, (int, np.integer)):
+                idxs = [idxs]
+                
+            for idx in idxs:
+                segment = self.segments[idx]
+                s = segment['start'] if isinstance(segment, dict) else segment[0]
+                e = segment['end'] if isinstance(segment, dict) else segment[1]
+                start = (s[1], s[0])
+                end = (e[1], e[0])
+                dist, proj = point_to_line_distance(pt, start, end)
+                if dist < 500.0:
+                    candidates.append((idx, dist, proj))
                     
             if not candidates:
                 min_dist = float('inf')
-                best_i, best_proj = 0, pt
-                for i, segment in enumerate(self.segments):
-                    dist, proj = point_to_line_distance(pt, segment[0], segment[1])
+                best_idx, best_proj = 0, pt
+                for idx in idxs:
+                    segment = self.segments[idx]
+                    s = segment['start'] if isinstance(segment, dict) else segment[0]
+                    e = segment['end'] if isinstance(segment, dict) else segment[1]
+                    start = (s[1], s[0])
+                    end = (e[1], e[0])
+                    dist, proj = point_to_line_distance(pt, start, end)
                     if dist < min_dist:
-                        min_dist, best_i, best_proj = dist, i, proj
-                candidates.append((best_i, min_dist, best_proj))
+                        min_dist, best_idx, best_proj = dist, idx, proj
+                candidates.append((best_idx, min_dist, best_proj))
 
             for y, dist, proj in candidates:
                 prob, state = max(
@@ -193,3 +299,131 @@ class HMMMapMatcher:
         n = len(trajectory) - 1
         prob, state = max((V[n][y], y) for y in V[n])
         return path[state]
+
+class RBPFMapMatcher:
+    """
+    Rao-Blackwellized Particle Filter (RBPF) for map matching.
+    Uses building footprints as hard constraints (zero weight if inside).
+    Uses road segments as soft constraints.
+    """
+    def __init__(self, road_segments, buildings=None):
+        self.segments = road_segments
+        self.buildings = buildings or []
+        
+        self.building_paths = []
+        if self.buildings:
+            from matplotlib.path import Path as MplPath
+            for b in self.buildings:
+                if len(b['polygon']) > 2:
+                    self.building_paths.append(MplPath(b['polygon']))
+                    
+        # Simple spatial index for segments
+        if self.segments:
+            from scipy.spatial import cKDTree
+            midpoints = []
+            for segment in self.segments:
+                s = segment['start'] if isinstance(segment, dict) else segment[0]
+                e = segment['end'] if isinstance(segment, dict) else segment[1]
+                midpoints.append([(s[1] + e[1])/2.0, (s[0] + e[0])/2.0])
+            self.tree = cKDTree(midpoints)
+        else:
+            self.tree = None
+
+    def in_building(self, lat, lon):
+        if not self.building_paths:
+            return False
+        pt = [lat, lon]
+        for path in self.building_paths:
+            if path.contains_point(pt):
+                return True
+        return False
+
+    def distance_to_road(self, lat, lon):
+        if not self.tree:
+            return 0.0
+        pt = (lon, lat)
+        _, idxs = self.tree.query([lon, lat], k=10)
+        if isinstance(idxs, (int, np.integer)):
+            idxs = [idxs]
+            
+        min_dist = float('inf')
+        for idx in idxs:
+            segment = self.segments[idx]
+            s = segment['start'] if isinstance(segment, dict) else segment[0]
+            e = segment['end'] if isinstance(segment, dict) else segment[1]
+            start = (s[1], s[0])
+            end = (e[1], e[0])
+            dist, _ = point_to_line_distance(pt, start, end)
+            if dist < min_dist:
+                min_dist = dist
+        return min_dist
+
+    def match(self, trajectory):
+        """
+        Runs the RBPF over a trajectory.
+        trajectory: list of (lat, lon)
+        Returns filtered trajectory.
+        """
+        if not trajectory:
+            return trajectory
+            
+        num_particles = 1000
+        # Initialize particles around the first point
+        # [lat, lon, weight]
+        lat0, lon0 = trajectory[0]
+        
+        # Add slight noise to initial position
+        particles = np.zeros((num_particles, 3))
+        particles[:, 0] = lat0 + np.random.randn(num_particles) * 1e-5
+        particles[:, 1] = lon0 + np.random.randn(num_particles) * 1e-5
+        particles[:, 2] = 1.0 / num_particles
+        
+        filtered_traj = []
+        
+        for t in range(len(trajectory)):
+            if t > 0:
+                # Predict step: move particles by the observed delta in trajectory
+                dlat = trajectory[t][0] - trajectory[t-1][0]
+                dlon = trajectory[t][1] - trajectory[t-1][1]
+                
+                # Add process noise
+                particles[:, 0] += dlat + np.random.randn(num_particles) * 2e-6
+                particles[:, 1] += dlon + np.random.randn(num_particles) * 2e-6
+            
+            # Update step: apply constraints
+            for i in range(num_particles):
+                p_lat, p_lon = particles[i, 0], particles[i, 1]
+                
+                # Hard constraint: Buildings
+                if self.in_building(p_lat, p_lon):
+                    particles[i, 2] = 0.0
+                    continue
+                    
+                # Soft constraint: Road distance
+                d_road = self.distance_to_road(p_lat, p_lon)
+                # Weight formula from paper: w(d) = 1 / log(max(d_min, d))
+                d_min = 2.5
+                weight = 1.0 / max(0.1, np.log(max(d_min, d_road)))
+                particles[i, 2] *= weight
+                
+            # Normalize
+            weight_sum = np.sum(particles[:, 2])
+            if weight_sum > 0:
+                particles[:, 2] /= weight_sum
+            else:
+                # All particles died (e.g. all in buildings), reset weights
+                particles[:, 2] = 1.0 / num_particles
+                
+            # Resample if effective particles < threshold
+            n_eff = 1.0 / (np.sum(particles[:, 2]**2) + 1e-12)
+            if n_eff < num_particles / 2.0:
+                indices = np.random.choice(num_particles, size=num_particles, p=particles[:, 2])
+                particles = particles[indices]
+                particles[:, 2] = 1.0 / num_particles
+                
+            # Estimate current position (weighted mean)
+            est_lat = np.average(particles[:, 0], weights=particles[:, 2])
+            est_lon = np.average(particles[:, 1], weights=particles[:, 2])
+            filtered_traj.append((est_lat, est_lon))
+            
+        return filtered_traj

@@ -32,6 +32,9 @@ def load_synced_trip(trip_id):
     Re-run the corrected preprocessing for a single trip and return the
     10 Hz synchronized DataFrame WITH GPS lat/lon and heading carried through.
     """
+    if trip_id.startswith("PVS_"):
+        return pd.read_csv(common.PROCESSED_DIR / f"sync_{trip_id}.csv")
+        
     manifest = json.load(open(common.PROJECT_ROOT / "data" / "manifest.json"))
     info = manifest["trips"][trip_id]
     s_path = common.DATASET_ROOT / info["s_file"]

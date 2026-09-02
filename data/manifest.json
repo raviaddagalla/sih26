@@ -6,7 +6,11 @@
     "S2": {
       "driver": "A",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["motorway", "dirt road", "A-roads"],
+      "road_types": [
+        "motorway",
+        "dirt road",
+        "A-roads"
+      ],
       "split": "train",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/S (Driver A)/S2/S-S2.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/S (Driver A)/S2/V-S2.csv",
@@ -15,7 +19,11 @@
     "M": {
       "driver": "B",
       "phone_model": "Unknown",
-      "road_types": ["roundabouts", "hard brakes", "country roads"],
+      "road_types": [
+        "roundabouts",
+        "hard brakes",
+        "country roads"
+      ],
       "split": "val",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/M (Driver B)/S-M.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/M (Driver B)/V-M.csv",
@@ -24,7 +32,11 @@
     "Vw4": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["roundabouts", "motorway", "inner city"],
+      "road_types": [
+        "roundabouts",
+        "motorway",
+        "inner city"
+      ],
       "split": "train",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw04/S-Vw4.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw04/V-Vw4.csv",
@@ -33,7 +45,13 @@
     "Vtb5": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["dirt", "gravel", "wet road", "motorway", "traffic"],
+      "road_types": [
+        "dirt",
+        "gravel",
+        "wet road",
+        "motorway",
+        "traffic"
+      ],
       "split": "train",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vtb (Driver E)/Vtb05/S-Vtb5.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vtb (Driver E)/Vtb05/V-vtb5.csv",
@@ -42,7 +60,9 @@
     "Y1": {
       "driver": "D",
       "phone_model": "Unknown",
-      "road_types": ["mixed"],
+      "road_types": [
+        "mixed"
+      ],
       "split": "val",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Y (Driver D)/Y1/S-Y1.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Y (Driver D)/Y1/V-Y1.csv",
@@ -51,7 +71,10 @@
     "Vfa02": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["motorway", "urban canyon"],
+      "road_types": [
+        "motorway",
+        "urban canyon"
+      ],
       "split": "train",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vf (Driver E)/V-Vfa02/S-Vfa02.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vf (Driver E)/V-Vfa02/V-Vfa02.csv",
@@ -60,7 +83,9 @@
     "Vw2": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["motorway"],
+      "road_types": [
+        "motorway"
+      ],
       "split": "train",
       "s_file": "Synchronised V abd S datasets/Uncategorised IOVNB Dataset/S-Dataset/S-Vw2.csv",
       "v_file": "Synchronised V abd S datasets/Uncategorised IOVNB Dataset/V-Dataset/V-Vw2.csv",
@@ -69,7 +94,9 @@
     "Vw14b": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["motorway"],
+      "road_types": [
+        "motorway"
+      ],
       "split": "train",
       "s_file": "Synchronised V abd S datasets/Uncategorised IOVNB Dataset/S-Dataset/S-Vw14b.csv",
       "v_file": "Synchronised V abd S datasets/Uncategorised IOVNB Dataset/V-Dataset/V-Vw14b.csv",
@@ -78,7 +105,9 @@
     "A2": {
       "driver": "H",
       "phone_model": "Blackberry Priv",
-      "road_types": ["motorway"],
+      "road_types": [
+        "motorway"
+      ],
       "split": "train",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-A2.csv",
       "v_file": null,
@@ -88,7 +117,9 @@
     "A5": {
       "driver": "H",
       "phone_model": "Blackberry Priv",
-      "road_types": ["mixed"],
+      "road_types": [
+        "mixed"
+      ],
       "split": "test",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-A5.csv",
       "v_file": null,
@@ -98,7 +129,10 @@
     "T2": {
       "driver": "F",
       "phone_model": "Motorola Moto G7 Power",
-      "road_types": ["France", "mixed"],
+      "road_types": [
+        "France",
+        "mixed"
+      ],
       "split": "test",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T2.csv",
       "v_file": null,
@@ -108,7 +142,9 @@
     "Vw1": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["stationary"],
+      "road_types": [
+        "stationary"
+      ],
       "split": "stationary",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw01/S-Vw1.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw01/V-Vw1.csv",
@@ -118,7 +154,9 @@
     "Vw15": {
       "driver": "E",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["stationary"],
+      "road_types": [
+        "stationary"
+      ],
       "split": "stationary",
       "s_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw15/S-Vw15.csv",
       "v_file": "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw15/V-Vw15.csv",
@@ -128,7 +166,10 @@
     "T1": {
       "driver": "F",
       "phone_model": "Motorola Moto G7 Power",
-      "road_types": ["France", "mixed"],
+      "road_types": [
+        "France",
+        "mixed"
+      ],
       "split": "train",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T1.csv",
       "v_file": null,
@@ -138,7 +179,10 @@
     "T4": {
       "driver": "F",
       "phone_model": "Motorola Moto G7 Power",
-      "road_types": ["France", "mixed"],
+      "road_types": [
+        "France",
+        "mixed"
+      ],
       "split": "train",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T4.csv",
       "v_file": null,
@@ -148,7 +192,10 @@
     "T7": {
       "driver": "F",
       "phone_model": "Motorola Moto G7 Power",
-      "road_types": ["France", "mixed"],
+      "road_types": [
+        "France",
+        "mixed"
+      ],
       "split": "train",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T7.csv",
       "v_file": null,
@@ -158,7 +205,10 @@
     "T9": {
       "driver": "F",
       "phone_model": "Motorola Moto G7 Power",
-      "road_types": ["France", "mixed"],
+      "road_types": [
+        "France",
+        "mixed"
+      ],
       "split": "val",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-T9.csv",
       "v_file": null,
@@ -168,19 +218,87 @@
     "A9": {
       "driver": "A",
       "phone_model": "Huawei P20 Pro",
-      "road_types": ["motorway", "mixed"],
+      "road_types": [
+        "motorway",
+        "mixed"
+      ],
       "split": "train",
       "s_file": "Unsynchronised V and S Dataset/Uncategorised IOVNB (V and S) Dataset/S-Dataset/S-A9.csv",
       "v_file": null,
       "has_can_velocity": false,
       "note": "No matching V- file exists. GPS Speed used as velocity ground truth."
+    },
+    "PVS_1": {
+      "split": "train",
+      "has_can_velocity": false,
+      "s_file": "",
+      "v_file": ""
+    },
+    "PVS_2": {
+      "split": "train",
+      "has_can_velocity": false,
+      "s_file": "",
+      "v_file": ""
     }
   },
   "feature_sets": {
-    "A": {"channels": ["Accelerometer X", "Accelerometer Y", "Accelerometer Z"], "n_channels": 3},
-    "B": {"channels": ["Gyroscope Yaw", "Gyroscope Pitch", "Gyroscope Roll"], "n_channels": 3},
-    "C": {"channels": ["Accelerometer X", "Accelerometer Y", "Accelerometer Z", "Gyroscope Yaw", "Gyroscope Pitch", "Gyroscope Roll"], "n_channels": 6},
-    "D": {"channels": ["Accelerometer X", "Accelerometer Y", "Accelerometer Z", "Gyroscope Yaw", "Gyroscope Pitch", "Gyroscope Roll", "Gravity X", "Gravity Y", "Gravity Z"], "n_channels": 9},
-    "E": {"channels": ["Accelerometer X", "Accelerometer Y", "Accelerometer Z", "Gyroscope Yaw", "Gyroscope Pitch", "Gyroscope Roll", "Gravity X", "Gravity Y", "Gravity Z", "Orientation Yaw", "Orientation Pitch", "Orientation Roll"], "n_channels": 12}
+    "A": {
+      "channels": [
+        "Accelerometer X",
+        "Accelerometer Y",
+        "Accelerometer Z"
+      ],
+      "n_channels": 3
+    },
+    "B": {
+      "channels": [
+        "Gyroscope Yaw",
+        "Gyroscope Pitch",
+        "Gyroscope Roll"
+      ],
+      "n_channels": 3
+    },
+    "C": {
+      "channels": [
+        "Accelerometer X",
+        "Accelerometer Y",
+        "Accelerometer Z",
+        "Gyroscope Yaw",
+        "Gyroscope Pitch",
+        "Gyroscope Roll"
+      ],
+      "n_channels": 6
+    },
+    "D": {
+      "channels": [
+        "Accelerometer X",
+        "Accelerometer Y",
+        "Accelerometer Z",
+        "Gyroscope Yaw",
+        "Gyroscope Pitch",
+        "Gyroscope Roll",
+        "Gravity X",
+        "Gravity Y",
+        "Gravity Z"
+      ],
+      "n_channels": 9
+    },
+    "E": {
+      "channels": [
+        "Accelerometer X",
+        "Accelerometer Y",
+        "Accelerometer Z",
+        "Gyroscope Yaw",
+        "Gyroscope Pitch",
+        "Gyroscope Roll",
+        "Gravity X",
+        "Gravity Y",
+        "Gravity Z",
+        "Orientation Yaw",
+        "Orientation Pitch",
+        "Orientation Roll"
+      ],
+      "n_channels": 12
+    }
   }
 }

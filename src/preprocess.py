@@ -305,34 +305,41 @@ def process_all():
         print(f"\n  Processing {trip_id} (split={split})...")
 
         # Load S-file
-        s_path = DATASET_ROOT / info['s_file']
-        s_df = load_s_file(s_path, trip_id)
-
-        # Sanity: GPS speed (in m/s) should be 0-60 m/s (~216 km/h)
-        gps_speed = s_df['GPS Speed'].values
-        gps_max_ms = np.nanmax(gps_speed)
-        assert gps_max_ms < 60, (f"{trip_id}: GPS speed max = {gps_max_ms:.2f} m/s "
-                                  f"= {gps_max_ms * 3.6:.1f} km/h — implausible!")
-        print(f"    GPS speed (m/s): max={gps_max_ms:.2f} ({gps_max_ms * 3.6:.1f} km/h)")
-
-        # Load V-file if available
-        v_df = None
-        if info['has_can_velocity'] and info.get('v_file'):
-            v_path = DATASET_ROOT / info['v_file']
-            v_df = load_v_file(v_path, trip_id)
-            can_max = v_df['Velocity_kmh'].max()
-            assert can_max < 250, (f"{trip_id}: CAN velocity max = {can_max:.2f} km/h — implausible!")
-            print(f"    CAN velocity (km/h): max={can_max:.2f}")
-
-            # Cross-check: GPS*3.6 should approximate CAN
-            ratio = (gps_max_ms * 3.6) / can_max if can_max > 0 else 0
-            print(f"    GPS*3.6/CAN ratio: {ratio:.3f} (expect ~0.9-1.1)")
-
-        # Gravity compensate
-        s_df = gravity_compensate(s_df)
-
-        # Synchronize to 10Hz
-        sync_df = synchronize(s_df, v_df, info['has_can_velocity'], trip_id)
+        if trip_id.startswith("PVS_"):
+            sync_path = PROCESSED_DIR / f"sync_{trip_id}.csv"
+            sync_df = pd.read_csv(sync_path)
+            # PVS trips don't need gravity compensation or sync, they are already synced.
+            gps_max_ms = sync_df['Velocity_ms'].max()
+            print(f"    PVS pre-synced. Velocity max={gps_max_ms:.2f} m/s")
+        else:
+            s_path = DATASET_ROOT / info['s_file']
+            s_df = load_s_file(s_path, trip_id)
+            
+            # Sanity: GPS speed (in m/s) should be 0-60 m/s (~216 km/h)
+            gps_speed = s_df['GPS Speed'].values
+            gps_max_ms = np.nanmax(gps_speed)
+            assert gps_max_ms < 60, (f"{trip_id}: GPS speed max = {gps_max_ms:.2f} m/s "
+                                      f"= {gps_max_ms * 3.6:.1f} km/h — implausible!")
+            print(f"    GPS speed (m/s): max={gps_max_ms:.2f} ({gps_max_ms * 3.6:.1f} km/h)")
+    
+            # Load V-file if available
+            v_df = None
+            if info['has_can_velocity'] and info.get('v_file'):
+                v_path = DATASET_ROOT / info['v_file']
+                v_df = load_v_file(v_path, trip_id)
+                can_max = v_df['Velocity_kmh'].max()
+                assert can_max < 250, (f"{trip_id}: CAN velocity max = {can_max:.2f} km/h — implausible!")
+                print(f"    CAN velocity (km/h): max={can_max:.2f}")
+    
+                # Cross-check: GPS*3.6 should approximate CAN
+                ratio = (gps_max_ms * 3.6) / can_max if can_max > 0 else 0
+                print(f"    GPS*3.6/CAN ratio: {ratio:.3f} (expect ~0.9-1.1)")
+    
+            # Gravity compensate
+            s_df = gravity_compensate(s_df)
+    
+            # Synchronize to 10Hz
+            sync_df = synchronize(s_df, v_df, info['has_can_velocity'], trip_id)
 
         # Assert velocity labels are sane AFTER synchronization
         vel = sync_df['Velocity_ms'].values
