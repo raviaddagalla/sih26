@@ -1,0 +1,28 @@
+name: idr_navigation_app
+description: A minimal luxury navigation interface for Intelligent Dead Reckoning.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  sensors_plus: ^6.0.0
+  tflite_flutter: ^0.12.1
+  geolocator: ^13.0.2
+  flutter_map: ^7.0.0
+  latlong2: ^0.9.0
+  permission_handler: ^11.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/
