@@ -7,5 +7,5 @@ data/processed/*.npy
 data/processed/*.pkl
 scratch/
 data/processed/
-models/
+/models/
 data/raw/
