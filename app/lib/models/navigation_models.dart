@@ -14,6 +14,7 @@ class NavigationSnapshot {
     required this.longitude,
     required this.gpsAvailable,
     required this.demoMode,
+    this.activeRoute,
   });
 
   final NavigationMode mode;
@@ -27,6 +28,7 @@ class NavigationSnapshot {
   final double longitude;
   final bool gpsAvailable;
   final bool demoMode;
+  final List<dynamic>? activeRoute;
 }
 
 enum NavigationMode { gnss, deadReckoning }

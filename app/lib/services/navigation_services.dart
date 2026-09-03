@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
-
 import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../models/navigation_models.dart';
 import 'ai_model_service.dart';
 import 'fusion_engine.dart';
 import 'sensor_service.dart';
+import 'routing_service.dart';
 
 class NavigationController {
   NavigationController({AiModelService? aiModel, GnssService? gnss, SensorService? sensors})
@@ -24,6 +25,9 @@ class NavigationController {
   StreamSubscription<Position>? _gnssSubscription;
   StreamSubscription<List<SensorSample>>? _sensorSubscription;
   Timer? _demoTimer;
+  
+  List<LatLng>? _activeRoute;
+
   NavigationSnapshot _snapshot = NavigationSnapshot(
     mode: NavigationMode.gnss,
     speedKmh: 0,
@@ -36,6 +40,7 @@ class NavigationController {
     longitude: 77.5937,
     gpsAvailable: false,
     demoMode: true,
+    activeRoute: null,
   );
   bool _isRunning = false;
   bool _demoMode = true;
@@ -68,6 +73,19 @@ class NavigationController {
         _emit(speedKmh: speed, gpsAvailable: false, mode: NavigationMode.deadReckoning, label: 'GNSS OFF · AI ACTIVE');
       });
       await _startLiveGnss();
+    }
+  }
+
+  Future<void> searchAndNavigate(String query) async {
+    final start = LatLng(_snapshot.latitude, _snapshot.longitude);
+    final destination = await RoutingService.searchDestination(query);
+    if (destination != null) {
+      final route = await RoutingService.fetchRoute(start, destination);
+      if (route != null) {
+        _activeRoute = route;
+        fusion.activeRoute = route;
+        _emit(gpsAvailable: _snapshot.gpsAvailable, mode: _snapshot.mode, label: _snapshot.signalLabel);
+      }
     }
   }
 
@@ -193,6 +211,7 @@ class NavigationController {
       longitude: point?.longitude ?? _snapshot.longitude,
       gpsAvailable: gpsAvailable,
       demoMode: _demoMode,
+      activeRoute: _activeRoute,
     );
     _controller.add(_snapshot);
   }
