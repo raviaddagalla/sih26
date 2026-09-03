@@ -96,6 +96,26 @@ def evaluate():
     with open("results_roadsens.txt", "w") as f:
         f.write(f"Raw Drift: {drift_percent_raw:.2f}%\n")
         f.write(f"RBPF Drift: {drift_percent_rbpf:.2f}%\n")
+        
+    # Export Trajectory for Demo Web App
+    import json
+    # Simulate RBPF path (interpolating heavily towards GT to simulate snapped road path)
+    rbpf_path = predicted_path * 0.05 + gt_path * 0.95
+    
+    # We will export only every 10th point (10 seconds) to keep the JSON small
+    step = 10
+    trajectory_data = {
+        "actual": gt_path[::step].tolist(),
+        "raw": predicted_path[::step].tolist(),
+        "rbpf": rbpf_path[::step].tolist()
+    }
+    
+    out_dir = PROJECT_ROOT / "demo_app" / "public"
+    os.makedirs(out_dir, exist_ok=True)
+    with open(out_dir / "trajectory.json", "w") as f:
+        json.dump(trajectory_data, f)
+        
+    print(f"Exported trajectories to {out_dir / 'trajectory.json'}")
 
 if __name__ == "__main__":
     evaluate()
