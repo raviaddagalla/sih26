@@ -1,10 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:idr_navigation_app/main.dart';
+
+import 'package:navigate_phase1/main.dart';
 
 void main() {
-  testWidgets('IDR navigation app renders', (tester) async {
-    await tester.pumpWidget(const IdrNavigationApp());
-    expect(find.text('GPS ACTIVE'), findsWidgets);
-    expect(find.text('SPEED'), findsOneWidget);
+  testWidgets('fresh navigation app renders', (tester) async {
+    await tester.pumpWidget(const NavigateApp());
+    expect(find.text('Where to?'), findsOneWidget);
   });
 }

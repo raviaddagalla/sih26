@@ -1,61 +1,27 @@
-import 'package:flutter/foundation.dart';
+import 'package:latlong2/latlong.dart';
 
-@immutable
-class NavigationSnapshot {
-  const NavigationSnapshot({
-    required this.mode,
-    required this.speedKmh,
-    required this.heading,
-    required this.distanceKm,
-    required this.signalLabel,
-    required this.accuracyMeters,
-    required this.updatedAt,
-    required this.latitude,
-    required this.longitude,
-    required this.gpsAvailable,
-    required this.demoMode,
-    this.activeRoute,
-  });
+class NavigationState {
+  const NavigationState({this.userLocation, this.destination, this.route, this.isNavigating = false, this.errorMessage});
+  final LatLng? userLocation;
+  final LatLng? destination;
+  final RouteData? route;
+  final bool isNavigating;
+  final String? errorMessage;
 
-  final NavigationMode mode;
-  final double speedKmh;
-  final double heading;
-  final double distanceKm;
-  final String signalLabel;
-  final double accuracyMeters;
-  final DateTime updatedAt;
-  final double latitude;
-  final double longitude;
-  final bool gpsAvailable;
-  final bool demoMode;
-  final List<dynamic>? activeRoute;
+  NavigationState copyWith({LatLng? userLocation, LatLng? destination, RouteData? route, bool? isNavigating, String? errorMessage, bool clearError = false}) => NavigationState(userLocation: userLocation ?? this.userLocation, destination: destination ?? this.destination, route: route ?? this.route, isNavigating: isNavigating ?? this.isNavigating, errorMessage: clearError ? null : errorMessage ?? this.errorMessage);
 }
 
-enum NavigationMode { gnss, deadReckoning }
-
-class SensorSample {
-  const SensorSample({
-    required this.ax,
-    required this.ay,
-    required this.az,
-    required this.gx,
-    required this.gy,
-    required this.gz,
-    required this.timestamp,
-  });
-
-  final double ax;
-  final double ay;
-  final double az;
-  final double gx;
-  final double gy;
-  final double gz;
-  final DateTime timestamp;
+class RouteData {
+  const RouteData({required this.points, required this.distanceMeters, required this.durationSeconds, required this.steps});
+  final List<LatLng> points;
+  final double distanceMeters;
+  final double durationSeconds;
+  final List<NavigationStep> steps;
 }
 
-class PositionPoint {
-  const PositionPoint(this.latitude, this.longitude);
-
-  final double latitude;
-  final double longitude;
+class NavigationStep {
+  const NavigationStep({required this.instruction, required this.distanceMeters, required this.maneuver});
+  final String instruction;
+  final double distanceMeters;
+  final String maneuver;
 }

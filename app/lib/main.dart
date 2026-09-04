@@ -1,48 +1,27 @@
 import 'package:flutter/material.dart';
 
-import 'screens/navigation_screen.dart';
+import 'screens/map_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const IdrNavigationApp());
+  runApp(const NavigateApp());
 }
 
-class IdrNavigationApp extends StatelessWidget {
-  const IdrNavigationApp({super.key});
-
-  static const ink = Color(0xFF11120F);
-  static const paper = Color(0xFFF3F0E8);
-  static const lime = Color(0xFFD9F16F);
-  static const muted = Color(0xFF7E8276);
+class NavigateApp extends StatelessWidget {
+  const NavigateApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'IDR / Intelligent Dead Reckoning',
+      title: 'Navigate',
       theme: ThemeData(
-        brightness: Brightness.light,
-        scaffoldBackgroundColor: paper,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: lime,
-          brightness: Brightness.light,
-          surface: paper,
-        ),
-        fontFamily: 'Georgia',
-        textTheme: const TextTheme(
-          displayLarge: TextStyle(fontFamily: 'Georgia', fontWeight: FontWeight.w400),
-          headlineMedium: TextStyle(fontFamily: 'Georgia', fontWeight: FontWeight.w400),
-          titleLarge: TextStyle(fontFamily: 'Georgia', fontWeight: FontWeight.w400),
-          bodyMedium: TextStyle(fontFamily: 'Arial', height: 1.35),
-          labelLarge: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, letterSpacing: 1.1),
-        ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: paper,
-          foregroundColor: ink,
-          elevation: 0,
-        ),
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1A73E8)),
+        scaffoldBackgroundColor: const Color(0xFFF7F9FC),
+        fontFamily: 'Arial',
       ),
-      home: const NavigationScreen(),
+      home: const MapScreen(),
     );
   }
 }
