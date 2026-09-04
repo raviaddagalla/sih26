@@ -170,8 +170,14 @@ class IdrEngine {
         alignment.updateYawOffset(gnss.heading, _eskf!.headingDegrees, gnss.speed);
       }
 
-      // GNSS measurement update
-      _eskf!.updateGnss(gnss.latitude, gnss.longitude, gnss.accuracy);
+      // GNSS measurement update with forward speed and heading course
+      _eskf!.updateGnss(
+        gnss.latitude,
+        gnss.longitude,
+        gnss.accuracy,
+        speed: gnss.speed,
+        heading: gnss.heading,
+      );
     }
 
     // Check if replay adapter provides ground truth
@@ -189,7 +195,7 @@ class IdrEngine {
   /// 10 Hz Navigation Tick:
   /// - Runs VelocityCNN inference
   /// - Updates Non-Holonomic Constraints (NHC)
-  /// - Applies route map matching
+  /// - Applies progressive route map matching and route slicing
   /// - Emits NavigationTelemetry
   void _onNavTick() {
     if (_eskf == null) return;
@@ -201,7 +207,7 @@ class IdrEngine {
     final (predictedSpeed, _) = velocityCnn.predict(preprocessor);
     if (preprocessor.isWindowReady && !preprocessor.isStationary) {
       // Apply ML velocity constraint to ESKF
-      _eskf!.updateMlVelocity(predictedSpeed, 0.25); // 0.5 m/s uncertainty
+      _eskf!.updateMlVelocity(predictedSpeed, 0.25);
     }
 
     // 2. Non-Holonomic Constraints (lateral/vertical speed = 0)
@@ -211,9 +217,9 @@ class IdrEngine {
     final (rawLat, rawLon) = _eskf!.getLatLon();
     var estimatedPos = LatLng(rawLat, rawLon);
 
-    // 4. Map Matching (soft constraint against planned route)
-    final (snappedPos, _, _) = routeMatcher.match(estimatedPos);
-    estimatedPos = snappedPos;
+    // 4. Map Matching (progressive soft constraint and polyline slicing)
+    final matchResult = routeMatcher.match(estimatedPos);
+    estimatedPos = matchResult.snappedPosition;
 
     // Track total distance
     if (_lastPosition != null) {
@@ -262,6 +268,10 @@ class IdrEngine {
       groundTruthLat: _lastGtLat,
       groundTruthLon: _lastGtLon,
       groundTruthSpeed: _lastGtSpeed,
+      remainingDistanceMeters: routeMatcher.hasRoute ? matchResult.remainingDistanceMeters : null,
+      slicedRoutePoints: routeMatcher.hasRoute ? matchResult.slicedRemainingPoints : null,
+      isOffRoute: matchResult.isOffRoute,
+      currentSegmentIndex: matchResult.currentSegmentIndex,
     );
 
     _lastTelemetry = telemetry;

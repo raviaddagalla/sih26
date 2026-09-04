@@ -32,6 +32,10 @@ class NavigationTelemetry {
   final double? groundTruthLat;
   final double? groundTruthLon;
   final double? groundTruthSpeed;
+  final double? remainingDistanceMeters;
+  final List<dynamic>? slicedRoutePoints;
+  final bool isOffRoute;
+  final int currentSegmentIndex;
 
   const NavigationTelemetry({
     required this.timestamp,
@@ -53,6 +57,10 @@ class NavigationTelemetry {
     this.groundTruthLat,
     this.groundTruthLon,
     this.groundTruthSpeed,
+    this.remainingDistanceMeters,
+    this.slicedRoutePoints,
+    this.isOffRoute = false,
+    this.currentSegmentIndex = 0,
   });
 
   double get speedKmh => velocity * 3.6;

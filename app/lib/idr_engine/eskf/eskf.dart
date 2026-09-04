@@ -29,6 +29,9 @@ class ESKF {
   final double accelBiasWalk;
   final double gyroBiasWalk;
 
+  double forwardSpeed = 0.0;
+  bool _isInitialFix = true;
+
   ESKF({
     required this.originLat,
     required this.originLon,
@@ -40,6 +43,7 @@ class ESKF {
     this.gyroBiasWalk = 0.0001,
   }) {
     p = Vector3.zero;
+    forwardSpeed = initSpeed;
     v = Vector3(
       initSpeed * cos(initHeadingRad),
       initSpeed * sin(initHeadingRad),
@@ -69,7 +73,9 @@ class ESKF {
     P[r * 15 + c] = val;
   }
 
-  /// IMU state and covariance propagation (100 Hz).
+  /// IMU state propagation (100 Hz).
+  /// Uses vehicular non-holonomic kinematics to eliminate accelerometer double-integration
+  /// divergence under intense engine vibrations (e.g. scooters / two-wheelers).
   void predict(double dt, Vector3 accel, Vector3 gyro) {
     if (dt <= 0 || dt > 0.2) dt = 0.01; // Protect against clock jumps
 
@@ -77,54 +83,49 @@ class ESKF {
     final aBody = accel - ba;
     final wBody = gyro - bg;
 
-    final cBn = q.toRotationMatrix();
-
-    // 1. Nominal State Propagation
-    final aNed = cBn.multiplyVector(aBody) + g;
-    p = p + (v * dt) + (aNed * (0.5 * dt * dt));
-    v = v + (aNed * dt);
-
+    // 1. Attitude Propagation: Gyroscope integration (immune to linear vibrations and gravity leak)
     final deltaQ = Quaternion.fromRotationVector(wBody * dt);
     q = q.multiply(deltaQ).normalized();
 
-    // 2. Error State Transition Matrix F (15x15)
-    // F = I_15 + F_continuous * dt
+    // 2. Extract current vehicle heading (yaw)
+    final yaw = q.toEuler().x;
+
+    // 3. Smooth forward speed with along-track acceleration bounded against vibration spikes
+    final aForward = (aBody.x).clamp(-3.5, 3.5);
+    forwardSpeed = (forwardSpeed + aForward * dt).clamp(0.0, 45.0);
+
+    // 4. Vehicular non-holonomic velocity (lateral and vertical velocity = 0)
+    v = Vector3(
+      forwardSpeed * cos(yaw),
+      forwardSpeed * sin(yaw),
+      0.0,
+    );
+
+    // 5. Kinematic position propagation (single integration of velocity)
+    p = p + (v * dt);
+
+    // 6. Error State Transition Matrix F (15x15)
     final F = List<double>.filled(225, 0.0);
     for (int i = 0; i < 15; i++) {
-      F[i * 15 + i] = 1.0; // Identity diagonal
+      F[i * 15 + i] = 1.0;
     }
-
-    // dp / dv = I * dt
     for (int i = 0; i < 3; i++) {
       F[i * 15 + (3 + i)] = dt;
     }
 
-    // dv / dtheta = -C_bn * [a_b]x * dt
+    final cBn = q.toRotationMatrix();
     final aBodySkew = aBody.skewSymmetric();
     final cbnSkew = cBn.multiply(aBodySkew);
     for (int r = 0; r < 3; r++) {
       for (int c = 0; c < 3; c++) {
         F[(3 + r) * 15 + (6 + c)] = -cbnSkew.get(r, c) * dt;
-        F[(3 + r) * 15 + (12 + c)] = -cBn.get(r, c) * dt; // dv / dba
       }
     }
 
-    // dtheta / dtheta = I - [w_b]x * dt
-    final wBodySkew = wBody.skewSymmetric();
-    for (int r = 0; r < 3; r++) {
-      for (int c = 0; c < 3; c++) {
-        F[(6 + r) * 15 + (6 + c)] -= wBodySkew.get(r, c) * dt;
-        if (r == c) {
-          F[(6 + r) * 15 + (9 + c)] = -dt; // dtheta / dbg
-        }
-      }
-    }
-
-    // 3. Covariance Propagation: P = F * P * F^T + Q_discrete
+    // 7. Covariance Propagation: P = F * P * F^T + Q
     final FP = _multiply15(F, P);
     final FPFt = _multiply15Transpose(FP, F);
 
-    // Add process noise
     final qA = accelNoise * accelNoise * dt;
     final qG = gyroNoise * gyroNoise * dt;
     final qBa = accelBiasWalk * accelBiasWalk * dt;
@@ -140,116 +141,86 @@ class ESKF {
     P = FPFt;
   }
 
-  /// Update with Deep Learning forward velocity estimate.
+  /// Update with Deep Learning forward velocity estimate (VelocityCNN).
   void updateMlVelocity(double vMl, double rMl) {
-    final cBn = q.toRotationMatrix();
-    final cNb = cBn.transpose();
+    if (vMl < 0) return;
+    // Adaptively blend forward speed towards AI estimate
+    final innov = vMl - forwardSpeed;
+    final k = 0.30;
+    forwardSpeed = max(0.0, forwardSpeed + k * innov);
 
-    // Body velocity v_b = C_nb * v
-    final vBody = cNb.multiplyVector(v);
-    final zEst = vBody.x; // Forward body axis
-    final y = vMl - zEst; // Innovation
-
-    // Measurement Jacobian H (1x15)
-    // dh / dv = cNb[0, :]
-    // dh / dtheta = [v_b]x[0, :]
-    final H = List<double>.filled(15, 0.0);
-    H[3] = cNb.get(0, 0);
-    H[4] = cNb.get(0, 1);
-    H[5] = cNb.get(0, 2);
-
-    final vBodySkew = vBody.skewSymmetric();
-    H[6] = vBodySkew.get(0, 0);
-    H[7] = vBodySkew.get(0, 1);
-    H[8] = vBodySkew.get(0, 2);
-
-    // S = H * P * H^T + R_ml (scalar)
-    double HPHt = 0.0;
-    final PHt = List<double>.filled(15, 0.0);
-    for (int i = 0; i < 15; i++) {
-      double sum = 0.0;
-      for (int j = 0; j < 15; j++) {
-        sum += _getP(i, j) * H[j];
-      }
-      PHt[i] = sum;
-      HPHt += H[i] * sum;
-    }
-
-    final S = HPHt + rMl;
-    if (S.abs() < 1e-9) return;
-    final invS = 1.0 / S;
-
-    // Kalman gain K = P * H^T * inv(S) (15x1)
-    final dx = List<double>.filled(15, 0.0);
-    for (int i = 0; i < 15; i++) {
-      final ki = PHt[i] * invS;
-      dx[i] = ki * y;
-    }
-
-    _injectErrorState(dx);
-
-    // Update Covariance: P = (I - K*H) * P
-    for (int i = 0; i < 15; i++) {
-      final ki = PHt[i] * invS;
-      for (int j = 0; j < 15; j++) {
-        _setP(i, j, _getP(i, j) - ki * PHt[j]);
-      }
-    }
+    final yaw = q.toEuler().x;
+    v = Vector3(
+      forwardSpeed * cos(yaw),
+      forwardSpeed * sin(yaw),
+      0.0,
+    );
   }
 
   /// Non-Holonomic Constraints (NHC): Lateral and vertical velocity in body frame ~ 0.
   void updateNhc() {
-    final cBn = q.toRotationMatrix();
-    final cNb = cBn.transpose();
-    final vBody = cNb.multiplyVector(v);
-
-    // Constraint 1: Lateral velocity (Y) = 0
-    _updateScalarMeasurement(
-      hRow: [0, 0, 0, cNb.get(1, 0), cNb.get(1, 1), cNb.get(1, 2), 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      innovation: 0.0 - vBody.y,
-      rVariance: 0.04, // 0.2 m/s std
-    );
-
-    // Constraint 2: Vertical velocity (Z) = 0
-    _updateScalarMeasurement(
-      hRow: [0, 0, 0, cNb.get(2, 0), cNb.get(2, 1), cNb.get(2, 2), 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      innovation: 0.0 - vBody.z,
-      rVariance: 0.04,
+    final yaw = q.toEuler().x;
+    v = Vector3(
+      forwardSpeed * cos(yaw),
+      forwardSpeed * sin(yaw),
+      0.0,
     );
   }
 
-  /// Zero Velocity Update (ZUPT): When stationary, v = 0.
+  /// Zero Velocity Update (ZUPT): When stationary, vehicle speed is locked to zero.
   void updateZupt() {
-    for (int axis = 0; axis < 3; axis++) {
-      final h = List<double>.filled(15, 0.0);
-      h[3 + axis] = 1.0;
-      final currentV = axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
-      _updateScalarMeasurement(
-        hRow: h,
-        innovation: 0.0 - currentV,
-        rVariance: 0.0025, // 0.05 m/s tight uncertainty
+    forwardSpeed = 0.0;
+    v = Vector3.zero;
+  }
+
+  /// GNSS position and velocity update.
+  /// Anchors local position and resets accumulated drift cleanly.
+  void updateGnss(
+    double lat,
+    double lon,
+    double accuracy, {
+    double? speed,
+    double? heading,
+  }) {
+    final ned = GeoUtils.latLonToNed(lat, lon, originLat, originLon);
+    final errorDist = sqrt((ned.x - p.x) * (ned.x - p.x) + (ned.y - p.y) * (ned.y - p.y));
+
+    if (errorDist > 25.0 || _isInitialFix) {
+      // Cleanly anchor position on initial fix or large gap without lag
+      p = Vector3(ned.x, ned.y, p.z);
+      _isInitialFix = false;
+    } else {
+      // Smooth Kalman innovation
+      final variance = max(accuracy * accuracy, 2.25);
+      final k = (10.0 / (10.0 + variance)).clamp(0.20, 0.75);
+      p = Vector3(
+        p.x + k * (ned.x - p.x),
+        p.y + k * (ned.y - p.y),
+        p.z,
       );
     }
-  }
 
-  /// GNSS position update with reported horizontal accuracy.
-  void updateGnss(double lat, double lon, double accuracy) {
-    final ned = GeoUtils.latLonToNed(lat, lon, originLat, originLon);
-    final variance = max(accuracy * accuracy, 2.25); // At least 1.5m std
+    // Update forward speed if GNSS speed is reliable
+    if (speed != null && speed >= 0.5) {
+      forwardSpeed = speed;
+      final yaw = q.toEuler().x;
+      v = Vector3(
+        forwardSpeed * cos(yaw),
+        forwardSpeed * sin(yaw),
+        0.0,
+      );
+    }
 
-    // North update
-    _updateScalarMeasurement(
-      hRow: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      innovation: ned.x - p.x,
-      rVariance: variance,
-    );
-
-    // East update
-    _updateScalarMeasurement(
-      hRow: [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      innovation: ned.y - p.y,
-      rVariance: variance,
-    );
+    // Align yaw with GNSS course over ground when vehicle is in steady forward motion
+    if (heading != null && speed != null && speed > 2.5) {
+      final currentYawDeg = headingDegrees;
+      final diffDeg = GeoUtils.wrapDegrees(heading - currentYawDeg);
+      if (diffDeg.abs() < 45.0) {
+        final nudgeRad = (diffDeg * 0.12) * pi / 180.0;
+        final corrQ = Quaternion.fromEuler(nudgeRad, 0.0, 0.0);
+        q = q.multiply(corrQ).normalized();
+      }
+    }
   }
 
   void _updateScalarMeasurement({

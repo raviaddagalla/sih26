@@ -2,17 +2,17 @@ import 'dart:math';
 import '../core/imu_sample.dart';
 
 /// Preprocesses high-frequency IMU measurements:
-/// - Low-pass vibration filtering
-/// - Zero-Velocity Update (ZUPT) detection
+/// - Engine vibration suppression
+/// - Adaptive Zero-Velocity Update (ZUPT) detection for two-wheelers/scooters
 /// - Normalization and sliding window assembly for VelocityCNN
 class ImuPreprocessor {
-  // Low-pass filter smoothing factors (exponential moving average: alpha ~ 0.35 at 100Hz)
+  // Cascaded low-pass filter (alpha ~ 0.15 gives a ~3.5 Hz cutoff at 100Hz, killing engine buzz)
   final double alpha;
-  double _filteredAx = 0, _filteredAy = 0, _filteredAz = 0;
+  double _filteredAx = 0, _filteredAy = 0, _filteredAz = 9.81;
   double _filteredGx = 0, _filteredGy = 0, _filteredGz = 0;
   bool _initialized = false;
 
-  // Sliding window buffer for VelocityCNN (200 timesteps)
+  // Sliding window buffer for VelocityCNN (200 timesteps = 2.0s @ 100Hz)
   static const int windowSize = 200;
   final List<List<double>> _windowBuffer = [];
 
@@ -20,17 +20,17 @@ class ImuPreprocessor {
   final List<double> means;
   final List<double> stds;
 
-  // ZUPT state
+  // Adaptive ZUPT state
   bool _isStationary = false;
   double _stationaryScore = 0.0;
-  final List<double> _accelMagBuffer = [];
+  final List<double> _gyroNormBuffer = [];
 
   bool get isStationary => _isStationary;
   double get stationaryScore => _stationaryScore;
   bool get isWindowReady => _windowBuffer.length >= windowSize;
 
   ImuPreprocessor({
-    this.alpha = 0.35,
+    this.alpha = 0.15,
     List<double>? means,
     List<double>? stds,
   })  : means = means ??
@@ -63,7 +63,7 @@ class ImuPreprocessor {
       _filteredGz = sample.gz;
       _initialized = true;
     } else {
-      // Exponential low-pass filter
+      // Exponential low-pass filter (quenches engine vibration harmonics)
       _filteredAx = _filteredAx * (1 - alpha) + sample.ax * alpha;
       _filteredAy = _filteredAy * (1 - alpha) + sample.ay * alpha;
       _filteredAz = _filteredAz * (1 - alpha) + sample.az * alpha;
@@ -87,28 +87,23 @@ class ImuPreprocessor {
       _windowBuffer.removeAt(0);
     }
 
-    // Check ZUPT (Zero-Velocity Update) condition
-    final accelMag = sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az);
-    _accelMagBuffer.add(accelMag);
-    if (_accelMagBuffer.length > 25) {
-      _accelMagBuffer.removeAt(0);
+    // Adaptive ZUPT: When vehicle is stopped at a signal or parking,
+    // filtered angular rate is very small even if the single-cylinder engine idles
+    final gyroNorm = sqrt(_filteredGx * _filteredGx + _filteredGy * _filteredGy + _filteredGz * _filteredGz);
+    _gyroNormBuffer.add(gyroNorm);
+    if (_gyroNormBuffer.length > 50) {
+      _gyroNormBuffer.removeAt(0);
     }
 
-    if (_accelMagBuffer.length >= 20) {
-      double sum = 0;
-      for (final m in _accelMagBuffer) {
-        sum += m;
+    if (_gyroNormBuffer.length >= 30) {
+      double sumG = 0;
+      for (final g in _gyroNormBuffer) {
+        sumG += g;
       }
-      final meanMag = sum / _accelMagBuffer.length;
-      double varSum = 0;
-      for (final m in _accelMagBuffer) {
-        varSum += (m - meanMag) * (m - meanMag);
-      }
-      final variance = varSum / _accelMagBuffer.length;
-      final gyroEnergy = sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz;
+      final meanG = sumG / _gyroNormBuffer.length;
 
-      // When vehicle is completely stationary, variance and gyro energy are minimal
-      _isStationary = (variance < 0.05 && gyroEnergy < 0.005);
+      // When stopped (even with scooter idling), mean low-pass gyro rate < 0.06 rad/s (~3.4 deg/s)
+      _isStationary = meanG < 0.06;
       _stationaryScore = _isStationary ? 1.0 : 0.0;
     }
 
@@ -144,31 +139,10 @@ class ImuPreprocessor {
     return tensor;
   }
 
-  /// Builds a [1, 6, 20] tensor for 20-sample window model if needed.
-  List<List<List<double>>> getChannelsFirstTensor20() {
-    final int count = min(20, _windowBuffer.length);
-    final startIndex = _windowBuffer.length - count;
-
-    final tensor = List.generate(
-      1,
-      (_) => List.generate(
-        6,
-        (channelIdx) => List.generate(
-          20,
-          (step) {
-            final idx = (startIndex + step).clamp(0, _windowBuffer.length - 1);
-            return _windowBuffer[idx][channelIdx];
-          },
-        ),
-      ),
-    );
-    return tensor;
-  }
-
   void reset() {
     _initialized = false;
     _windowBuffer.clear();
-    _accelMagBuffer.clear();
+    _gyroNormBuffer.clear();
     _isStationary = false;
     _stationaryScore = 0.0;
   }

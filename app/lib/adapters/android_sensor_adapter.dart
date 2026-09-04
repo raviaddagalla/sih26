@@ -7,6 +7,7 @@ import '../idr_engine/core/gnss_sample.dart';
 
 /// Live sensor adapter connecting Android hardware (Sensors & GNSS)
 /// to the standardized SensorDataSource interface.
+/// Features heavy vibration filtering specifically tuned for two-wheelers and scooters.
 class AndroidSensorAdapter implements SensorDataSource {
   final _imuController = StreamController<ImuSample>.broadcast();
   final _gnssController = StreamController<GnssSample>.broadcast();
@@ -27,21 +28,29 @@ class AndroidSensorAdapter implements SensorDataSource {
   bool get isPaused => _isPaused;
 
   @override
-  String get sourceName => 'Android Live Sensors (100Hz)';
+  String get sourceName => 'Android Live Sensors (100Hz Vibr-Filtered)';
 
-  StreamSubscription<UserAccelerometerEvent>? _accelSub;
+  StreamSubscription<AccelerometerEvent>? _accelSub;
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   StreamSubscription<MagnetometerEvent>? _magSub;
   StreamSubscription<loc.LocationData>? _locSub;
 
-  final loc.Location _location = loc.Location();
+  final loc.Location _location;
+  final dynamic _locationService; // LocationService?
 
-  // Cached latest readings for sync
-  double _lastAx = 0.0, _lastAy = 0.0, _lastAz = 0.0;
-  double _lastGx = 0.0, _lastGy = 0.0, _lastGz = 0.0;
+  // Cached latest readings with scooter engine vibration filter
+  // Low-pass filter smoothing (alpha ~ 0.20 strongly attenuates 30-100Hz engine buzz)
+  static const double _filterAlpha = 0.20;
+  double _rawAx = 0.0, _rawAy = 0.0, _rawAz = 9.81;
+  double _filtAx = 0.0, _filtAy = 0.0, _filtAz = 9.81;
+  double _filtGx = 0.0, _filtGy = 0.0, _filtGz = 0.0;
   double? _lastMx, _lastMy, _lastMz;
 
   DateTime? _startEpoch;
+
+  AndroidSensorAdapter({loc.Location? sharedLocation, dynamic locationService})
+      : _location = sharedLocation ?? (locationService != null ? locationService.location as loc.Location : loc.Location()),
+        _locationService = locationService;
 
   @override
   Future<void> start() async {
@@ -50,27 +59,36 @@ class AndroidSensorAdapter implements SensorDataSource {
     _isPaused = false;
     _startEpoch = DateTime.now();
 
-    // 1. Configure Location Service for navigation
-    await _setupLocation();
+    // 1. Configure Location Service for high-accuracy vehicular tracking
+    if (_locationService == null) {
+      await _setupLocation();
+    }
 
-    // 2. Subscribe to high-rate IMU sensors (~100 Hz / SensorManager.SENSOR_DELAY_FASTEST)
-    _accelSub = userAccelerometerEventStream(
+    // 2. Subscribe to raw Accelerometer (includes gravity for phone alignment)
+    _accelSub = accelerometerEventStream(
       samplingPeriod: const Duration(microseconds: 10000), // 100 Hz target
     ).listen((event) {
       if (_isPaused) return;
-      _lastAx = event.x;
-      _lastAy = event.y;
-      _lastAz = event.z;
+      _rawAx = event.x;
+      _rawAy = event.y;
+      _rawAz = event.z;
+
+      // Two-wheeler vibration dampening
+      _filtAx = _filtAx * (1.0 - _filterAlpha) + _rawAx * _filterAlpha;
+      _filtAy = _filtAy * (1.0 - _filterAlpha) + _rawAy * _filterAlpha;
+      _filtAz = _filtAz * (1.0 - _filterAlpha) + _rawAz * _filterAlpha;
+
       _emitImu();
     });
 
+    // 3. Subscribe to Gyroscope
     _gyroSub = gyroscopeEventStream(
       samplingPeriod: const Duration(microseconds: 10000), // 100 Hz target
     ).listen((event) {
       if (_isPaused) return;
-      _lastGx = event.x;
-      _lastGy = event.y;
-      _lastGz = event.z;
+      _filtGx = _filtGx * (1.0 - _filterAlpha) + event.x * _filterAlpha;
+      _filtGy = _filtGy * (1.0 - _filterAlpha) + event.y * _filterAlpha;
+      _filtGz = _filtGz * (1.0 - _filterAlpha) + event.z * _filterAlpha;
     });
 
     try {
@@ -83,34 +101,42 @@ class AndroidSensorAdapter implements SensorDataSource {
         _lastMz = event.z;
       });
     } catch (_) {
-      // Magnetometer optional/not available on all devices
+      // Magnetometer is optional
     }
 
-    // 3. Subscribe to GNSS Location Stream
-    _locSub = _location.onLocationChanged.listen((locData) {
-      if (_isPaused) return;
-      final t = _getRelativeTimeSeconds();
-      final accuracy = locData.accuracy ?? 15.0;
-      final speed = (locData.speed != null && locData.speed! >= 0) ? locData.speed! : 0.0;
-      final heading = locData.heading ?? 0.0;
-      final lat = locData.latitude ?? 0.0;
-      final lon = locData.longitude ?? 0.0;
+    // 4. Subscribe to GNSS Location Stream
+    if (_locationService != null) {
+      _locSub = (_locationService.rawUpdates as Stream<loc.LocationData>).listen(_handleLocationData);
+      if (_locationService.lastLocationData != null) {
+        _handleLocationData(_locationService.lastLocationData as loc.LocationData);
+      }
+    } else {
+      _locSub = _location.onLocationChanged.listen(_handleLocationData);
+    }
+  }
 
-      // An update with valid coordinates and reasonable accuracy is marked available
-      final isAvailable = (lat != 0.0 || lon != 0.0) && accuracy < 80.0;
+  void _handleLocationData(loc.LocationData locData) {
+    if (_isPaused) return;
+    final t = _getRelativeTimeSeconds();
+    final accuracy = locData.accuracy ?? 10.0;
+    final speed = (locData.speed != null && locData.speed! >= 0) ? locData.speed! : 0.0;
+    final heading = locData.heading ?? 0.0;
+    final lat = locData.latitude ?? 0.0;
+    final lon = locData.longitude ?? 0.0;
 
-      final sample = GnssSample(
-        timestamp: t,
-        latitude: lat,
-        longitude: lon,
-        altitude: locData.altitude,
-        speed: speed,
-        accuracy: accuracy,
-        heading: heading,
-        isAvailable: isAvailable,
-      );
-      _gnssController.add(sample);
-    });
+    final isAvailable = (lat != 0.0 || lon != 0.0) && accuracy < 60.0;
+
+    final sample = GnssSample(
+      timestamp: t,
+      latitude: lat,
+      longitude: lon,
+      altitude: locData.altitude,
+      speed: speed,
+      accuracy: accuracy,
+      heading: heading,
+      isAvailable: isAvailable,
+    );
+    _gnssController.add(sample);
   }
 
   Future<void> _setupLocation() async {
@@ -126,9 +152,9 @@ class AndroidSensorAdapter implements SensorDataSource {
       }
 
       await _location.changeSettings(
-        accuracy: loc.LocationAccuracy.high,
-        interval: 500, // 2 Hz GNSS updates
-        distanceFilter: 0.5, // meters
+        accuracy: loc.LocationAccuracy.navigation,
+        interval: 1000, // 1 Hz navigation rate
+        distanceFilter: 1.0, // 1 meter filter
       );
     } catch (_) {}
   }
@@ -142,12 +168,12 @@ class AndroidSensorAdapter implements SensorDataSource {
     final t = _getRelativeTimeSeconds();
     final sample = ImuSample(
       timestamp: t,
-      ax: _lastAx,
-      ay: _lastAy,
-      az: _lastAz,
-      gx: _lastGx,
-      gy: _lastGy,
-      gz: _lastGz,
+      ax: _filtAx,
+      ay: _filtAy,
+      az: _filtAz,
+      gx: _filtGx,
+      gy: _filtGy,
+      gz: _filtGz,
       mx: _lastMx,
       my: _lastMy,
       mz: _lastMz,

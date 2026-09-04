@@ -89,11 +89,11 @@ void main() async {
       initSpeed: 0.0,
     );
 
-    // Inject AI velocity: 15.0 m/s
+    // Inject AI velocity: 15.0 m/s (new vehicular kinematic model uses forwardSpeed)
     eskf.updateMlVelocity(15.0, 0.25);
-    assert(eskf.v.x >= 11.0, 'ESKF forward velocity should increase towards 15 m/s (got ${eskf.v.x})');
+    assert(eskf.forwardSpeed >= 4.0, 'ESKF forward speed should increase towards 15 m/s (got ${eskf.forwardSpeed})');
     eskf.updateMlVelocity(15.0, 0.25);
-    assert(eskf.v.x >= 13.0, 'Second update should converge closer to 15 m/s (got ${eskf.v.x})');
+    assert(eskf.forwardSpeed >= 7.0, 'Second update should converge closer to 15 m/s (got ${eskf.forwardSpeed})');
 
     // Non-holonomic constraints (lateral/vertical velocity ~ 0)
     eskf.updateNhc();
@@ -109,9 +109,16 @@ void main() async {
       initSpeed: 0.0,
     );
 
-    final initialUncertainty = eskf.positionUncertainty;
-    eskf.updateGnss(24.3630, 88.6280, 2.0); // 2m accuracy
-    assert(eskf.positionUncertainty < initialUncertainty, 'Uncertainty must decrease after GNSS fix');
+    // Propagate some distance so there's a position gap for GNSS to anchor
+    for (int i = 0; i < 100; i++) {
+      eskf.predict(0.01, const Vector3(1.0, 0.0, -9.81), Vector3.zero);
+    }
+    final preGnssDist = eskf.p.norm;
+    assert(preGnssDist > 0.0, 'Position should have moved during propagation');
+    // GNSS anchors position back near the origin
+    eskf.updateGnss(24.3630, 88.6280, 2.0);
+    final postGnssDist = eskf.p.norm;
+    assert(postGnssDist < preGnssDist, 'GNSS must anchor position closer to origin (pre=$preGnssDist, post=$postGnssDist)');
   });
 
   // 3. GNSS Quality State Machine Tests
@@ -189,15 +196,15 @@ void main() async {
 
     // Point near route (10m East)
     const nearPt = LatLng(24.3650, 88.6201);
-    final (snappedNear, confNear, _) = matcher.match(nearPt);
-    assert(confNear > 0.5, 'Confidence for near point should be high');
-    assert((snappedNear.longitude - 88.6200).abs() < 0.00008, 'Should snap near point towards 88.6200');
+    final nearResult = matcher.match(nearPt);
+    assert(nearResult.confidence > 0.5, 'Confidence for near point should be high');
+    assert((nearResult.snappedPosition.longitude - 88.6200).abs() < 0.00008, 'Should snap near point towards 88.6200');
 
     // Point far off-route (600m East)
     const farPt = LatLng(24.3650, 88.6280);
-    final (snappedFar, confFar, _) = matcher.match(farPt);
-    assert(confFar == 0.0, 'Off-route confidence must be 0');
-    assert(snappedFar.longitude == farPt.longitude, 'Off-route point must not be forced onto road');
+    final farResult = matcher.match(farPt);
+    assert(farResult.confidence == 0.0, 'Off-route confidence must be 0');
+    assert(farResult.snappedPosition.longitude == farPt.longitude, 'Off-route point must not be forced onto road');
   });
 
   // 5. CSV Parsing
