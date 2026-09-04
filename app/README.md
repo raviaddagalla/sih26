@@ -1,61 +1,94 @@
-# Navigate Phase 1
+# Intelligent Dead Reckoning (IDR) Navigation App
 
-A completely fresh Flutter Android navigation app. It is independent of the previous project and contains **no AI, dead reckoning, IMU, TFLite, demo mode, simulator window, or mock playback UI**.
+A production-grade Android Flutter application featuring offline **Intelligent Dead Reckoning (IDR)** powered by on-device **TensorFlow Lite AI velocity estimation**, a **15-state Error-State Kalman Filter (ESKF)**, **Non-Holonomic Constraints (NHC)**, **adaptive GNSS outage handling**, **route map-matching**, and an interactive **Demo Mode** simulating real vehicular GNSS blackout segments.
 
-## Features
+---
 
-The app requests location access on launch, waits for a real GPS fix, shows the live user location on OpenStreetMap, and provides a Google Maps-style two-row picker. The source row displays the live current location, while the destination row uses OpenStreetMap Nominatim autocomplete suggestions as the user types. Selecting a suggestion requests a driving route from the OSRM demo API, draws it as a blue line, places a red destination pin, continuously updates the blue user marker from GPS, and presents text-based turn instructions with distance and ETA.
+## Key Features
 
-| Area | Implementation |
-| --- | --- |
-| Platform | Android-only Flutter project |
-| Map | `flutter_map` with OpenStreetMap tiles |
-| Location | `location` package with live updates configured at one-second intervals |
-| Search | OpenStreetMap Nominatim autocomplete with place suggestions and coordinates |
-| Routing | OSRM HTTP API with GeoJSON route geometry and turn steps |
-| UI | Search bar, recenter control, route line, current-location marker, destination pin, and navigation panel |
-| Demo mode | Not included in this phase |
-| AI/sensor fusion | Not included in this phase |
+1. **On-Device Deep Learning Inference**:
+   - Ingests high-frequency 100 Hz phone IMU signals (3-axis accelerometer and 3-axis gyroscope) into an optimized rolling buffer.
+   - Executes the pre-trained `VelocityCNN` model using `tflite_flutter` with the channels-first shape `[1, 6, 200]` (2.0-second window) to predict forward vehicle velocity with high precision.
 
-## Run
+2. **15-State Error-State Kalman Filter (ESKF)**:
+   - Tracks vehicle position (East, North, Down), velocity vector, quaternion attitude, gyroscope biases, and accelerometer biases.
+   - Fuses forward AI speed predictions with vehicle body kinematic constraints (Zero lateral slip $v_y \approx 0$ and Zero vertical bounce $v_z \approx 0$).
+   - Automatic Zero Velocity Updates (ZUPT) when stationary.
 
-Install Flutter and Android Studio with an Android SDK, then run:
+3. **Dynamic Phone Mounting Alignment**:
+   - Uses the Rodrigues rotation formula to extract the gravity vector and dynamically project arbitrary phone orientations (portrait, landscape, dash-mounted, angled) into the vehicle's reference frame.
 
-```bash
-flutter pub get
-flutter analyze
-flutter test --dart-define=FLUTTER_TEST=true
-flutter run
+4. **Adaptive GNSS Outage State Machine**:
+   - Seamlessly switches states: `STRONG` $\to$ `DEGRADED` $\to$ `DENIED` (pure AI dead-reckoning) $\to$ `REACQUIRING`.
+   - Sigmoid reacquisition blending eliminates coordinate snapping when exiting tunnels or underpasses.
+
+5. **Turn-by-Turn Routing & Route Map-Matching**:
+   - OpenStreetMap interactive vector tiles (`flutter_map`).
+   - Nominatim search with live destination autocompletion.
+   - OSRM driving route generation with polyline rendering, distance, and ETA.
+   - Orthogonal map-matching that softly snaps the navigation state to the active route while allowing real route excursions.
+
+6. **Interactive Demo Mode**:
+   - Built-in 100 Hz vehicular replay dataset (`assets/demo/test_dataset.csv`, 12,000 rows / 120s) with an intentional 45-second GNSS blackout.
+   - Interactive control panel: Play, Pause, Resume, Restart, and Speed multipliers ($1\times, 2\times, 5\times$).
+   - Real-time Telemetry HUD showing GNSS state badge, navigation mode, speed km/h, AI speed, IMU frequency, and position uncertainty.
+
+---
+
+## Project Structure
+
 ```
-
-Build the Android debug APK with:
-
-```bash
-flutter build apk --debug
-```
-
-The output is `build/app/outputs/flutter-apk/app-debug.apk`.
-
-## Testing on Android
-
-Create a Pixel 4 or newer Android emulator with API 30 or higher. Enable Location in the emulator settings, launch the app, and grant location access when prompted. The map should center on the emulator’s current coordinate. To test movement without physically moving, open Extended Controls, choose **Location**, enter a coordinate, and use the **Routes** or **Play Route** option. The live blue marker should update as the emulator sends GPS events.
-
-For a physical device, enable Developer Options and USB Debugging, install the APK, grant location access, and test outdoors or near a window for a stable initial fix. Route searches require network access because OSRM is called over HTTPS.
-
-## Project structure
-
-```text
 lib/
-  main.dart
-  models/navigation_models.dart
-  screens/map_screen.dart
-  services/location_service.dart
-  services/route_service.dart
-  services/geocoding_service.dart
-  widgets/navigation_panel.dart
-  widgets/location_picker.dart
+├── adapters/
+│   ├── sensor_data_source.dart      # Abstract sensor stream interface
+│   ├── android_sensor_adapter.dart  # Live phone IMU & GNSS adapter
+│   └── dataset_replay_adapter.dart  # 100 Hz CSV dataset replay adapter
+├── idr_engine/
+│   ├── core/
+│   │   ├── math_utils.dart          # Vector3, Matrix3, Quaternion, WGS84/NED
+│   │   ├── imu_sample.dart          # IMU sample representation
+│   │   ├── gnss_sample.dart         # GNSS sample representation
+│   │   └── nav_telemetry.dart       # 10 Hz navigation state stream
+│   ├── calibration/
+│   │   └── phone_alignment.dart     # Gravity extraction & Rodrigues alignment
+│   ├── filtering/
+│   │   └── imu_preprocessor.dart    # Low-pass filter, ZUPT, [1, 6, 200] tensor builder
+│   ├── velocity/
+│   │   └── velocity_cnn_service.dart # TFLite VelocityCNN inference service
+│   ├── eskf/
+│   │   └── eskf.dart                # 15-state Error-State Kalman Filter
+│   ├── fusion/
+│   │   └── gnss_state_machine.dart  # Outage FSM with Sigmoid reacquisition
+│   ├── map_matching/
+│   │   └── route_matcher.dart       # Soft polyline route projector
+│   └── idr_engine.dart              # Master navigation coordinator
+├── screens/
+│   └── map_screen.dart              # Map view with live navigation & demo controls
+├── widgets/
+│   ├── demo_control_panel.dart      # Replay slider, speed buttons, play/pause
+│   ├── telemetry_hud.dart           # Real-time state HUD
+│   ├── navigation_panel.dart        # Route instructions & metrics
+│   ├── search_bar.dart              # Address autocompletion search
+│   └── location_picker.dart         # Destination picker modal
+└── main.dart                        # Application bootstrap
 ```
 
-## Phase boundary
+---
 
-This is the live-navigation foundation only. Demo presentation controls and future AI or sensor-fusion features will be added separately later, without being part of this build.
+## Automated Verification
+
+The core IDR engine contains an automated test suite verifying all mathematical transformations, Kalman filter updates, outage transitions, and dataset parsing:
+
+```bash
+dart --enable-asserts test/run_idr_tests.dart
+```
+
+All 8 test suites execute with 0 errors:
+- WGS84 Lat/Lon to NED and back round-trip consistency
+- Quaternion rotation vector and rotation matrix
+- ESKF nominal state and error covariance propagation
+- ML Forward Velocity and NHC updates
+- GNSS position update uncertainty reduction
+- GNSS State Machine transitions during Outage and Reacquisition
+- Route Matcher soft-snapping and excursion detection
+- Dataset CSV parsing and row integrity
