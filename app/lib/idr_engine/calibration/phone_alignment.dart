@@ -50,7 +50,7 @@ class PhoneAlignment {
     if (gNorm < 1e-4) return;
 
     final gUnit = gMean.normalized();
-    final targetZ = const Vector3(0.0, 0.0, 1.0); // Gravity aligns with +Z in NED
+    final targetZ = const Vector3(0.0, 0.0, -1.0); // stationary accel (~+g, points up) -> -Z, so Z is down
 
     // Axis of rotation: v = gUnit x targetZ
     final v = gUnit.cross(targetZ);

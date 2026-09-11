@@ -1,4 +1,3 @@
-import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -87,48 +86,42 @@ class _IosGlassButtonState extends State<IosGlassButton> with SingleTickerProvid
           scale: _scale.value,
           child: child,
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(widget.borderRadius),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              height: widget.height,
-              padding: widget.padding,
-              decoration: BoxDecoration(
-                color: effectiveBg,
-                borderRadius: BorderRadius.circular(widget.borderRadius),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.18),
-                  width: 0.8,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.20),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (widget.icon != null) ...[
-                    widget.icon!,
-                    const SizedBox(width: 10),
-                  ],
-                  Text(
-                    widget.label,
-                    style: TextStyle(
-                      color: widget.foregroundColor,
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.2,
-                    ),
-                  ),
-                ],
-              ),
+        child: Container(
+          height: widget.height,
+          padding: widget.padding,
+          decoration: BoxDecoration(
+            color: effectiveBg,
+            borderRadius: BorderRadius.circular(widget.borderRadius),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.18),
+              width: 0.8,
             ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.20),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (widget.icon != null) ...[
+                widget.icon!,
+                const SizedBox(width: 10),
+              ],
+              Text(
+                widget.label,
+                style: TextStyle(
+                  color: widget.foregroundColor,
+                  fontSize: 15.5,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.2,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -223,35 +216,29 @@ class _IosIconButtonState extends State<IosIconButton> with SingleTickerProvider
           scale: _scale.value,
           child: child,
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(widget.size / 2),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              width: widget.size,
-              height: widget.size,
-              decoration: BoxDecoration(
-                color: effectiveBg,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.14),
-                  width: 0.8,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.22),
-                    blurRadius: 14,
-                    offset: const Offset(0, 5),
-                  ),
-                ],
+        child: Container(
+          width: widget.size,
+          height: widget.size,
+          decoration: BoxDecoration(
+            color: effectiveBg,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.16),
+              width: 0.8,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.22),
+                blurRadius: 14,
+                offset: const Offset(0, 5),
               ),
-              child: Center(
-                child: Icon(
-                  widget.icon,
-                  color: effectiveIconColor,
-                  size: effectiveIconSize,
-                ),
-              ),
+            ],
+          ),
+          child: Center(
+            child: Icon(
+              widget.icon,
+              color: effectiveIconColor,
+              size: effectiveIconSize,
             ),
           ),
         ),

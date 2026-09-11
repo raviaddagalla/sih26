@@ -54,9 +54,9 @@ class AndroidSensorAdapter implements SensorDataSource {
   final loc.Location _location;
   final dynamic _locationService; // LocationService?
 
-  // Cached latest readings with scooter engine vibration filter
-  // Low-pass filter smoothing (alpha ~ 0.20 strongly attenuates 30-100Hz engine buzz)
-  static const double _filterAlpha = 0.20;
+  // Low-pass filter smoothing: alpha = 0.45 effectively attenuates acoustic & engine
+  // buzz (>15Hz) while eliminating cornering/braking phase lag
+  static const double _filterAlpha = 0.45;
   double _rawAx = 0.0, _rawAy = 0.0, _rawAz = 9.81;
   double _filtAx = 0.0, _filtAy = 0.0, _filtAz = 9.81;
   double _filtGx = 0.0, _filtGy = 0.0, _filtGz = 0.0;

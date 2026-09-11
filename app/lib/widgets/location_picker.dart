@@ -3,6 +3,7 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../services/geocoding_service.dart';
 
@@ -10,11 +11,13 @@ class LocationPicker extends StatefulWidget {
   const LocationPicker({
     super.key,
     required this.sourceLabel,
+    this.currentLocation,
     required this.onDestinationSelected,
     required this.onRetryLocation,
   });
 
   final String sourceLabel;
+  final LatLng? currentLocation;
   final ValueChanged<PlaceSuggestion> onDestinationSelected;
   final VoidCallback onRetryLocation;
 
@@ -32,14 +35,18 @@ class _LocationPickerState extends State<LocationPicker> {
 
   void _changed(String value) {
     _debounce?.cancel();
-    if (value.trim().length < 3) {
+    if (value.trim().length < 2) {
       setState(() => _suggestions = <PlaceSuggestion>[]);
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 450), () async {
+    // Debounce 300ms for responsive as-you-type autocomplete
+    _debounce = Timer(const Duration(milliseconds: 300), () async {
       setState(() => _loading = true);
       try {
-        final results = await _service.search(value.trim());
+        final results = await _service.search(
+          value.trim(),
+          proximity: widget.currentLocation,
+        );
         if (mounted) setState(() => _suggestions = results);
       } catch (_) {
         if (mounted) setState(() => _suggestions = <PlaceSuggestion>[]);
@@ -71,25 +78,58 @@ class _LocationPickerState extends State<LocationPicker> {
     super.dispose();
   }
 
+  IconData _getIconForType(String? type) {
+    if (type == null) return Icons.place_rounded;
+    switch (type.toLowerCase()) {
+      case 'restaurant':
+      case 'cafe':
+      case 'fast_food':
+        return Icons.restaurant_rounded;
+      case 'hospital':
+      case 'pharmacy':
+      case 'clinic':
+        return Icons.local_hospital_rounded;
+      case 'fuel':
+        return Icons.local_gas_station_rounded;
+      case 'hotel':
+        return Icons.hotel_rounded;
+      case 'shop':
+      case 'supermarket':
+      case 'mall':
+        return Icons.shopping_bag_rounded;
+      case 'bank':
+      case 'atm':
+        return Icons.account_balance_rounded;
+      case 'school':
+      case 'college':
+      case 'university':
+        return Icons.school_rounded;
+      case 'place_of_worship':
+        return Icons.temple_hindu_rounded;
+      default:
+        return Icons.place_rounded;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(22),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
         child: Container(
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.72),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(22),
             border: Border.all(
-              color: Colors.white.withValues(alpha: 0.12),
+              color: Colors.white.withValues(alpha: 0.14),
               width: 0.8,
             ),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.30),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
+                blurRadius: 20,
+                offset: const Offset(0, 6),
               ),
             ],
           ),
@@ -196,13 +236,31 @@ class _LocationPickerState extends State<LocationPicker> {
   }
 
   Widget _suggestionTile(PlaceSuggestion suggestion) {
+    final distStr = suggestion.distanceMeters != null
+        ? (suggestion.distanceMeters! >= 1000
+            ? '${(suggestion.distanceMeters! / 1000).toStringAsFixed(1)} km'
+            : '${suggestion.distanceMeters!.toInt()} m')
+        : null;
+
+    final subtitle = distStr != null
+        ? (suggestion.address.isNotEmpty ? '$distStr • ${suggestion.address}' : distStr)
+        : suggestion.address;
+
     return InkWell(
       onTap: () => _select(suggestion),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         child: Row(
           children: <Widget>[
-            const Icon(Icons.place_outlined, size: 19, color: Color(0xFF94A3B8)),
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(_getIconForType(suggestion.type), size: 17, color: const Color(0xFF38BDF8)),
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -218,16 +276,18 @@ class _LocationPickerState extends State<LocationPicker> {
                       fontSize: 14,
                     ),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    suggestion.address,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF94A3B8),
+                  if (subtitle.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF94A3B8),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),

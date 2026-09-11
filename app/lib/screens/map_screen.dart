@@ -26,6 +26,7 @@ import '../adapters/android_sensor_adapter.dart';
 import '../adapters/dataset_replay_adapter.dart';
 import '../idr_engine/fusion/vehicle_profile.dart';
 import '../idr_engine/fusion/gnss_integrity_monitor.dart';
+import '../services/cached_tile_provider.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -55,6 +56,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   String? _message;
 
   bool _isDemoMode = false;
+  bool _isHudVisible = true;
   double _vehicleHeading = 0.0;
   bool _isHeadingUp = true;
   bool _isUserDragging = false;
@@ -126,6 +128,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
 
+    CachedTileProvider.init();
     _markerAnim.addListener(_onMarkerAnimTick);
 
     // Share the unified LocationService with AndroidSensorAdapter
@@ -322,6 +325,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       });
       _idrEngine.setRoute(route.points);
       _fitRoute(route.points);
+      CachedTileProvider.precacheRoute(route.points);
     } catch (_) {
       if (mounted) setState(() => _message = 'Could not calculate route. Check internet connection.');
     }
@@ -527,6 +531,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
       _mapController.move(LatLng(startLat, startLon), 16.0);
       _idrEngine.setRoute(demoRoute.points);
+      CachedTileProvider.precacheRoute(demoRoute.points);
 
       await _idrEngine.start(
         _replayAdapter,
@@ -622,6 +627,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   TileLayer(
                     urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                     userAgentPackageName: 'com.navigate.phase1',
+                    tileProvider: CachedTileProvider(),
                   ),
 
                 // Traveled route polyline (gray, dimmed)
@@ -742,6 +748,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         Expanded(
                           child: LocationPicker(
                             sourceLabel: _state.userLocation == null ? 'Waiting for GPS…' : 'Your location',
+                            currentLocation: _state.userLocation,
                             onDestinationSelected: _selectDestination,
                             onRetryLocation: _startLiveLocation,
                           ),
@@ -764,17 +771,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               right: 0,
               top: MediaQuery.of(context).padding.top +
                   (_state.route != null && _state.route!.steps.isNotEmpty ? 135 : 8),
-              child: ValueListenableBuilder<NavigationTelemetry?>(
-                valueListenable: _telemetryNotifier,
-                builder: (context, telem, _) {
-                  if (telem == null) return const SizedBox.shrink();
-                  return TelemetryHud(
-                    telemetry: telem,
-                    onToggleForceBlackout: !_isDemoMode ? _toggleForceBlackout : null,
-                    onShareLog: _logger.isLogging ? () => _logger.shareCurrentLog() : null,
-                    isLogging: _logger.isLogging,
-                  );
-                },
+              child: AnimatedOpacity(
+                opacity: _isHudVisible ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 180),
+                child: IgnorePointer(
+                  ignoring: !_isHudVisible,
+                  child: ValueListenableBuilder<NavigationTelemetry?>(
+                    valueListenable: _telemetryNotifier,
+                    builder: (context, telem, _) {
+                      if (telem == null) return const SizedBox.shrink();
+                      return TelemetryHud(
+                        telemetry: telem,
+                        onToggleForceBlackout: !_isDemoMode ? _toggleForceBlackout : null,
+                        onShareLog: _logger.isLogging ? () => _logger.shareCurrentLog() : null,
+                        isLogging: _logger.isLogging,
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
 
@@ -816,6 +830,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         color: isBlocked ? const Color(0xFFEF4444) : const Color(0xFF34D399),
                       );
                     },
+                  ),
+                  const SizedBox(height: 10),
+                  _roundControl(
+                    _isHudVisible ? Icons.visibility_rounded : Icons.visibility_off_rounded,
+                    () => setState(() => _isHudVisible = !_isHudVisible),
+                    tooltip: _isHudVisible ? 'Hide Telemetry' : 'Show Telemetry',
+                    color: _isHudVisible ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
                   ),
                   const SizedBox(height: 10),
                 ],
@@ -952,7 +973,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     return ClipRRect(
       borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
         child: Container(
           decoration: BoxDecoration(
             color: const Color(0xFF0F172A).withValues(alpha: 0.88),
@@ -1098,7 +1119,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         return ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
             child: Container(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               decoration: BoxDecoration(
@@ -1238,25 +1259,21 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   // ─── Off-Route Warning Banner ──────────────────────────────────────
 
   Widget _offRouteBanner() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.88),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.50), width: 1.2),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFFF59E0B).withValues(alpha: 0.20),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
-              ),
-            ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.60), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.35),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
           ),
-          child: Row(
+        ],
+      ),
+      child: Row(
             children: [
               Container(
                 width: 36,
@@ -1291,51 +1308,43 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ],
           ),
-        ),
-      ),
-    );
+        );
   }
 
   // ─── Demo Mode Toggle ──────────────────────────────────────────────
 
   Widget _demoModeBadgeButton() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          decoration: BoxDecoration(
-            color: _isDemoMode
-                ? const Color(0xFF10B981).withValues(alpha: 0.85)
-                : const Color(0xFF0F172A).withValues(alpha: 0.72),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.15),
-              width: 0.8,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.25),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: IosIconButton(
-            icon: Icons.science_rounded,
-            onPressed: () {
-              if (_isDemoMode) {
-                _stopDemoMode();
-              } else {
-                _showDemoConfirmationSheet();
-              }
-            },
-            size: 48,
-            iconSize: 22,
-            foregroundColor: _isDemoMode ? Colors.white : const Color(0xFF38BDF8),
-            tooltip: 'Demo Mode (Simulate GNSS Outage)',
-          ),
+    return Container(
+      decoration: BoxDecoration(
+        color: _isDemoMode
+            ? const Color(0xFF10B981).withValues(alpha: 0.85)
+            : const Color(0xFF0F172A).withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.15),
+          width: 0.8,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.25),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: IosIconButton(
+        icon: Icons.science_rounded,
+        onPressed: () {
+          if (_isDemoMode) {
+            _stopDemoMode();
+          } else {
+            _showDemoConfirmationSheet();
+          }
+        },
+        size: 48,
+        iconSize: 22,
+        foregroundColor: _isDemoMode ? Colors.white : const Color(0xFF38BDF8),
+        tooltip: 'Demo Mode (Simulate GNSS Outage)',
       ),
     );
   }
@@ -1349,7 +1358,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         return ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+            filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
             child: Container(
               padding: const EdgeInsets.fromLTRB(24, 14, 24, 32),
               decoration: BoxDecoration(
@@ -1549,7 +1558,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
           decoration: BoxDecoration(
@@ -1655,7 +1664,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   Widget _messageCard() => ClipRRect(
         borderRadius: BorderRadius.circular(18),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
@@ -1693,33 +1702,27 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         ),
       );
 
-  Widget _roundControl(IconData icon, VoidCallback onTap, {String? tooltip, Color? color}) => ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: GestureDetector(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              onTap();
-            },
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F172A).withValues(alpha: 0.78),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.18), width: 0.8),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    blurRadius: 14,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+  Widget _roundControl(IconData icon, VoidCallback onTap, {String? tooltip, Color? color}) => GestureDetector(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          onTap();
+        },
+        child: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.82),
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white.withValues(alpha: 0.16), width: 0.8),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.25),
+                blurRadius: 14,
+                offset: const Offset(0, 4),
               ),
-              child: Icon(icon, color: color ?? Colors.white, size: 20),
-            ),
+            ],
           ),
+          child: Icon(icon, color: color ?? Colors.white, size: 20),
         ),
       );
 
@@ -1845,25 +1848,21 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     required String message,
     required Color color,
   }) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.20),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withValues(alpha: 0.55), width: 1.0),
-            boxShadow: [
-              BoxShadow(
-                color: color.withValues(alpha: 0.22),
-                blurRadius: 14,
-                offset: const Offset(0, 4),
-              ),
-            ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.55), width: 1.0),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.22),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
           ),
-          child: Row(
+        ],
+      ),
+      child: Row(
             children: [
               Icon(icon, color: color, size: 22),
               const SizedBox(width: 10),
@@ -1895,9 +1894,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ],
           ),
-        ),
-      ),
-    );
+        );
   }
 
   Widget _destinationMarker() =>
