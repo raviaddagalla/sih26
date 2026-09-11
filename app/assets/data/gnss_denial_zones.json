@@ -1,0 +1,86 @@
+{
+  "type": "FeatureCollection",
+  "name": "CrowdSourcedGNSSDenialZones",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "tunnel_highway_km42",
+        "name": "Corridor Expressway Mountain Tunnel",
+        "zone_type": "tunnel",
+        "expected_outage_s": 45.0,
+        "entry_lat": 24.3762,
+        "entry_lon": 88.5460,
+        "exit_lat": 24.3750,
+        "exit_lon": 88.5435,
+        "radius_m": 85.0,
+        "recommended_process_noise_scale": 0.35,
+        "description": "Enclosed two-bore concrete tunnel with complete satellite masking."
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [88.5447, 24.3756]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "underpass_metro_junction",
+        "name": "Urban Junction Grade Separator Underpass",
+        "zone_type": "underpass",
+        "expected_outage_s": 25.0,
+        "entry_lat": 12.9725,
+        "entry_lon": 77.6110,
+        "exit_lat": 12.9710,
+        "exit_lon": 77.6095,
+        "radius_m": 60.0,
+        "recommended_process_noise_scale": 0.40,
+        "description": "Double-deck flyover and metro viaduct creating severe multipath and signal drop."
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.6102, 12.9718]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "parking_basement_techpark",
+        "name": "Tech City Multi-Level Subterranean Garage (Level B2/B3)",
+        "zone_type": "parking_basement",
+        "expected_outage_s": 120.0,
+        "entry_lat": 12.9352,
+        "entry_lon": 77.6940,
+        "exit_lat": 12.9348,
+        "exit_lon": 77.6935,
+        "radius_m": 90.0,
+        "recommended_process_noise_scale": 0.25,
+        "description": "Underground reinforced concrete parking with zero cellular and zero GNSS reception."
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.6937, 12.9350]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "urban_canyon_cbd",
+        "name": "Downtown Central Business District High-Rise Canyon",
+        "zone_type": "urban_canyon",
+        "expected_outage_s": 40.0,
+        "entry_lat": 12.9770,
+        "entry_lon": 77.5950,
+        "exit_lat": 12.9730,
+        "exit_lon": 77.5940,
+        "radius_m": 120.0,
+        "recommended_process_noise_scale": 0.50,
+        "description": "Continuous 40-story glass facades causing extreme pseudorange multipath and false locks."
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.5945, 12.9750]
+      }
+    }
+  ]
+}

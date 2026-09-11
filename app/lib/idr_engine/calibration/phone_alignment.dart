@@ -15,10 +15,17 @@ class PhoneAlignment {
 
   final List<Vector3> _stationaryAccelBuffer = [];
   final List<double> _headingDifferences = [];
+  int _consecutiveOutliers = 0;
 
   bool get isCalibrated => _isGravityCalibrated;
+  bool get isGravityCalibrated => _isGravityCalibrated;
   bool get isYawCalibrated => _isYawCalibrated;
+  bool get isFullyCalibrated => _isGravityCalibrated && _isYawCalibrated;
+  int get stationarySampleCount => _stationaryAccelBuffer.length;
+  int get yawSampleCount => _headingDifferences.length;
   double get yawOffsetDegrees => _yawOffsetRad * 180.0 / pi;
+  double get roll => atan2(_rotationCombined.m[7], _rotationCombined.m[8]);
+  double get pitch => -asin(_rotationCombined.m[6].clamp(-1.0, 1.0));
 
   /// Accumulate raw accelerometer samples during stationary periods to estimate gravity.
   void addStationarySample(Vector3 rawAccel) {
@@ -67,16 +74,39 @@ class PhoneAlignment {
   }
 
   /// Correlates GPS heading with phone integrated yaw during forward motion (>3 m/s).
+  /// Features adaptive discontinuity / phone bump detection: if heading residual
+  /// jumps by >25° persistently, the buffer is cleared to recalibrate rapidly in a burst.
   void updateYawOffset(double gpsHeadingDeg, double phoneYawDeg, double speed) {
     if (speed < 3.0) return; // Only calibrate yaw when moving steadily forward
 
     final diff = GeoUtils.wrapDegrees(gpsHeadingDeg - phoneYawDeg);
+
+    // Bump / remount detection: if heading shifts suddenly while vehicle moves straight
+    if (_isYawCalibrated) {
+      final currentYawOffsetDeg = _yawOffsetRad * 180.0 / pi;
+      final residual = (GeoUtils.wrapDegrees(diff - currentYawOffsetDeg)).abs();
+
+      if (residual > 25.0) {
+        _consecutiveOutliers++;
+        if (_consecutiveOutliers >= 3) {
+          // Discontinuity confirmed: phone was bumped or remounted
+          _headingDifferences.clear();
+          _consecutiveOutliers = 0;
+          _isYawCalibrated = false;
+        }
+      } else {
+        _consecutiveOutliers = 0;
+      }
+    }
+
     _headingDifferences.add(diff);
     if (_headingDifferences.length > 20) {
       _headingDifferences.removeAt(0);
     }
 
-    if (_headingDifferences.length >= 5) {
+    // Converges in fast burst mode with >= 3 samples, or normal mode with >= 5 samples
+    final minSamples = _isYawCalibrated ? 5 : 3;
+    if (_headingDifferences.length >= minSamples) {
       final sorted = List<double>.from(_headingDifferences)..sort();
       final medianDiff = sorted[sorted.length ~/ 2];
       _yawOffsetRad = medianDiff * pi / 180.0;
@@ -129,6 +159,7 @@ class PhoneAlignment {
     _isGravityCalibrated = false;
     _isYawCalibrated = false;
     _yawOffsetRad = 0.0;
+    _consecutiveOutliers = 0;
     _stationaryAccelBuffer.clear();
     _headingDifferences.clear();
   }

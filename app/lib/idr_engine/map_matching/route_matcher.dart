@@ -1,8 +1,11 @@
 import 'dart:math';
 import 'package:latlong2/latlong.dart';
 import '../core/math_utils.dart';
+import 'road_network_matcher.dart';
+export 'road_network_matcher.dart';
 
-/// Result of matching estimated vehicle position to the active route polyline.
+/// Result of matching estimated vehicle position to the active route polyline
+/// or the broader offline OSM road network.
 class RouteMatchResult {
   final LatLng snappedPosition;
   final double confidence;
@@ -12,6 +15,8 @@ class RouteMatchResult {
   final double remainingDistanceMeters;
   final List<LatLng> slicedRemainingPoints;
   final bool isOffRoute;
+  final bool isGeneralRoadSnapped;
+  final String? roadType;
 
   const RouteMatchResult({
     required this.snappedPosition,
@@ -22,17 +27,26 @@ class RouteMatchResult {
     required this.remainingDistanceMeters,
     required this.slicedRemainingPoints,
     required this.isOffRoute,
+    this.isGeneralRoadSnapped = false,
+    this.roadType,
   });
 }
 
 /// Road and planned-route constrained progressive map matching.
 /// Softly constrains dead-reckoning trajectory to the calculated OSRM route,
 /// tracks monotonic progress, slices the traveled route, and detects off-route deviation.
+/// Seamlessly falls back to an offline OSM road network matcher when unrouted
+/// or during detours / off-route excursions.
 class RouteMatcher {
+  final RoadNetworkMatcher roadNetworkMatcher;
+
   List<LatLng> _routePoints = [];
   bool _hasRoute = false;
   int _currentSegmentIndex = 0;
   int _offRouteTicks = 0;
+
+  RouteMatcher({RoadNetworkMatcher? networkMatcher})
+      : roadNetworkMatcher = networkMatcher ?? RoadNetworkMatcher();
 
   bool get hasRoute => _hasRoute && _routePoints.length >= 2;
   int get currentSegmentIndex => _currentSegmentIndex;
@@ -52,18 +66,25 @@ class RouteMatcher {
     _offRouteTicks = 0;
   }
 
-  /// Match current estimated position against the route.
-  RouteMatchResult match(LatLng estimated) {
+  /// Match current estimated position against the active route or broader road network.
+  RouteMatchResult match(LatLng estimated, {double? vehicleHeadingDeg}) {
     if (!hasRoute) {
+      // General road network snapping fallback when unrouted
+      final roadMatch = roadNetworkMatcher.match(
+        estimated,
+        vehicleHeadingDeg: vehicleHeadingDeg,
+      );
       return RouteMatchResult(
-        snappedPosition: estimated,
-        confidence: 0.0,
-        roadHeading: 0.0,
+        snappedPosition: roadMatch.snappedPosition,
+        confidence: roadMatch.confidence,
+        roadHeading: roadMatch.roadHeading,
         currentSegmentIndex: 0,
-        distanceToRoute: 0.0,
+        distanceToRoute: roadMatch.distanceToRoad,
         remainingDistanceMeters: 0.0,
         slicedRemainingPoints: const [],
         isOffRoute: false,
+        isGeneralRoadSnapped: roadMatch.isSnapped,
+        roadType: roadMatch.highwayType,
       );
     }
 
@@ -124,7 +145,7 @@ class RouteMatcher {
 
     final lat = estimated.latitude * (1.0 - blendFactor) + bestProj.latitude * blendFactor;
     final lon = estimated.longitude * (1.0 - blendFactor) + bestProj.longitude * blendFactor;
-    final snapped = LatLng(lat, lon);
+    final routeSnapped = LatLng(lat, lon);
 
     // Track off-route state (e.g. >40m for more than 30 ticks @ 10Hz = 3 seconds)
     if (minDistance > 40.0) {
@@ -134,8 +155,29 @@ class RouteMatcher {
     }
     final isOffRoute = _offRouteTicks > 30;
 
+    // Off-route detour fallback: snap to broader offline OSM road network
+    LatLng finalSnapped = routeSnapped;
+    double finalHeading = bestHeading;
+    double finalConfidence = blendFactor;
+    bool isGeneralSnapped = false;
+    String? matchedRoadType;
+
+    if (isOffRoute) {
+      final roadMatch = roadNetworkMatcher.match(
+        estimated,
+        vehicleHeadingDeg: vehicleHeadingDeg,
+      );
+      if (roadMatch.isSnapped) {
+        finalSnapped = roadMatch.snappedPosition;
+        finalHeading = roadMatch.roadHeading;
+        finalConfidence = roadMatch.confidence;
+        isGeneralSnapped = true;
+        matchedRoadType = roadMatch.highwayType;
+      }
+    }
+
     // Build sliced remaining route points (starting from snapped position)
-    final slicedPoints = <LatLng>[snapped];
+    final slicedPoints = <LatLng>[finalSnapped];
     for (int i = _currentSegmentIndex + 1; i < _routePoints.length; i++) {
       slicedPoints.add(_routePoints[i]);
     }
@@ -152,14 +194,16 @@ class RouteMatcher {
     }
 
     return RouteMatchResult(
-      snappedPosition: snapped,
-      confidence: blendFactor,
-      roadHeading: bestHeading,
+      snappedPosition: finalSnapped,
+      confidence: finalConfidence,
+      roadHeading: finalHeading,
       currentSegmentIndex: _currentSegmentIndex,
       distanceToRoute: minDistance,
       remainingDistanceMeters: remDist,
       slicedRemainingPoints: slicedPoints,
       isOffRoute: isOffRoute,
+      isGeneralRoadSnapped: isGeneralSnapped,
+      roadType: matchedRoadType,
     );
   }
 

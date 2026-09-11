@@ -1,11 +1,11 @@
-import 'dart:math';
+// ignore_for_file: avoid_print
 import 'package:latlong2/latlong.dart';
-import '../lib/idr_engine/core/math_utils.dart';
-import '../lib/idr_engine/core/gnss_sample.dart';
-import '../lib/idr_engine/core/nav_telemetry.dart';
-import '../lib/idr_engine/eskf/eskf.dart';
-import '../lib/idr_engine/fusion/gnss_state_machine.dart';
-import '../lib/idr_engine/map_matching/route_matcher.dart';
+import 'package:navigate_phase1/idr_engine/core/math_utils.dart';
+import 'package:navigate_phase1/idr_engine/core/gnss_sample.dart';
+import 'package:navigate_phase1/idr_engine/core/nav_telemetry.dart';
+import 'package:navigate_phase1/idr_engine/eskf/eskf.dart';
+import 'package:navigate_phase1/idr_engine/fusion/gnss_state_machine.dart';
+import 'package:navigate_phase1/idr_engine/map_matching/route_matcher.dart';
 
 void main() async {
   print('========================================');
@@ -101,7 +101,7 @@ void main() async {
     assert(eskf.v.z.abs() < 0.5, 'Vertical velocity must be ~0');
   });
 
-  test('GNSS position update reduces uncertainty', () {
+  test('GNSS position update reduces uncertainty (sawtooth verification)', () {
     final eskf = ESKF(
       originLat: 24.363,
       originLon: 88.628,
@@ -109,16 +109,29 @@ void main() async {
       initSpeed: 0.0,
     );
 
-    // Propagate some distance so there's a position gap for GNSS to anchor
+    final initUncertainty = eskf.positionUncertainty;
+
+    // 1. Propagate during dead reckoning outage (100 ticks = 1s)
     for (int i = 0; i < 100; i++) {
       eskf.predict(0.01, const Vector3(1.0, 0.0, -9.81), Vector3.zero);
     }
-    final preGnssDist = eskf.p.norm;
-    assert(preGnssDist > 0.0, 'Position should have moved during propagation');
-    // GNSS anchors position back near the origin
-    eskf.updateGnss(24.3630, 88.6280, 2.0);
-    final postGnssDist = eskf.p.norm;
-    assert(postGnssDist < preGnssDist, 'GNSS must anchor position closer to origin (pre=$preGnssDist, post=$postGnssDist)');
+    final propagatedUncertainty = eskf.positionUncertainty;
+    assert(propagatedUncertainty > initUncertainty,
+        'Uncertainty must grow during dead-reckoning propagation ($propagatedUncertainty > $initUncertainty)');
+
+    // 2. GNSS fix reduces uncertainty
+    eskf.updateGnss(24.3630, 88.6280, 1.5);
+    final postFixUncertainty = eskf.positionUncertainty;
+    assert(postFixUncertainty < propagatedUncertainty,
+        'Uncertainty must drop sharply upon GNSS fix (post=$postFixUncertainty < prop=$propagatedUncertainty)');
+
+    // 3. Second propagation grows uncertainty again (sawtooth cycle)
+    for (int i = 0; i < 100; i++) {
+      eskf.predict(0.01, const Vector3(1.0, 0.0, -9.81), Vector3.zero);
+    }
+    final secondPropUncertainty = eskf.positionUncertainty;
+    assert(secondPropUncertainty > postFixUncertainty,
+        'Second outage must grow uncertainty again ($secondPropUncertainty > $postFixUncertainty)');
   });
 
   // 3. GNSS Quality State Machine Tests
@@ -205,6 +218,29 @@ void main() async {
     final farResult = matcher.match(farPt);
     assert(farResult.confidence == 0.0, 'Off-route confidence must be 0');
     assert(farResult.snappedPosition.longitude == farPt.longitude, 'Off-route point must not be forced onto road');
+  });
+
+  test('RoadNetworkMatcher snaps unrouted trajectory to offline OSM road network', () {
+    final matcher = RouteMatcher();
+    // No route loaded (hasRoute == false)
+    assert(!matcher.hasRoute, 'Matcher should have no active route');
+
+    // Add a road segment to the road network matcher
+    matcher.roadNetworkMatcher.addSegment(
+      RoadSegment(
+        start: const LatLng(24.3700, 88.5500),
+        end: const LatLng(24.3800, 88.5500), // North-South road at lon 88.5500
+        highway: 'primary',
+      ),
+    );
+
+    // Vehicle point near the road (8m East)
+    const testPoint = LatLng(24.3750, 88.55008);
+    final matchResult = matcher.match(testPoint, vehicleHeadingDeg: 0.0);
+
+    assert(matchResult.isGeneralRoadSnapped, 'Must snap to general road network when unrouted');
+    assert(matchResult.confidence > 0.6, 'Confidence should be strong');
+    assert((matchResult.snappedPosition.longitude - 88.5500).abs() < 0.00005, 'Snapped longitude must align with road');
   });
 
   // 5. CSV Parsing

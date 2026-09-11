@@ -1,22 +1,31 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' show ImageFilter, FontFeature;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart' show HapticFeedback, rootBundle;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/navigation_models.dart';
 import '../services/location_service.dart';
 import '../services/route_service.dart';
+import '../services/session_logger.dart';
 import '../widgets/navigation_panel.dart';
+import '../widgets/ios_button.dart';
 import '../services/geocoding_service.dart';
 import '../widgets/location_picker.dart';
 import '../widgets/telemetry_hud.dart';
 import '../widgets/demo_control_panel.dart';
 import '../idr_engine/idr_engine.dart';
 import '../idr_engine/core/nav_telemetry.dart';
+import '../idr_engine/core/gnss_sample.dart';
 import '../adapters/android_sensor_adapter.dart';
 import '../adapters/dataset_replay_adapter.dart';
+import '../idr_engine/fusion/vehicle_profile.dart';
+import '../idr_engine/fusion/gnss_integrity_monitor.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -29,6 +38,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   final _mapController = MapController();
   final _location = LocationService();
   final _routes = RouteService();
+  final SessionLogger _logger = SessionLogger();
 
   // IDR Navigation Master Engine & Adapters
   final IdrEngine _idrEngine = IdrEngine();
@@ -37,9 +47,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   StreamSubscription<LatLng>? _locationSubscription;
   StreamSubscription<NavigationTelemetry>? _telemetrySubscription;
+  StreamSubscription<GnssSample>? _rawGnssSubscription;
 
   NavigationState _state = const NavigationState();
-  NavigationTelemetry? _telemetry;
+  final ValueNotifier<NavigationTelemetry?> _telemetryNotifier =
+      ValueNotifier<NavigationTelemetry?>(null);
   String? _message;
 
   bool _isDemoMode = false;
@@ -47,14 +59,74 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   bool _isHeadingUp = true;
   bool _isUserDragging = false;
   bool _isRerouting = false;
+  DateTime? _lastRerouteAttempt;
+  bool _dismissedCalibrationNotice = false;
+  RouteData? _cachedRoute;
+
+  // Smooth marker/camera glide: interpolates the 10 Hz telemetry ticks so the
+  // vehicle icon and camera move continuously instead of snapping every 100ms.
+  late final AnimationController _markerAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+  );
+  Tween<double>? _latTween, _lngTween, _headingTween;
+  double? _renderLat, _renderLng, _renderHeading;
 
   // Sliced route points for polyline rendering
   List<LatLng> _traveledPoints = [];
   List<LatLng> _remainingPoints = [];
 
+  /// Restarts the glide animation from wherever the marker currently is
+  /// (not from the raw telemetry value) so back-to-back ticks compose into
+  /// one continuous motion rather than a stutter-step.
+  void _updateMarkerAnimation(double lat, double lng, double headingDeg) {
+    final curLat = _renderLat ?? lat;
+    final curLng = _renderLng ?? lng;
+    final curHeading = _renderHeading ?? headingDeg;
+
+    // Shortest-path heading interpolation so 359°→2° doesn't spin the long way.
+    final headingDelta = ((headingDeg - curHeading + 540) % 360) - 180;
+    final targetHeading = curHeading + headingDelta;
+
+    _latTween = Tween(begin: curLat, end: lat);
+    _lngTween = Tween(begin: curLng, end: lng);
+    _headingTween = Tween(begin: curHeading, end: targetHeading);
+
+    _markerAnim
+      ..stop()
+      ..value = 0.0
+      ..forward();
+  }
+
+  /// Called on every animation frame (~60 fps) while a glide is in progress.
+  /// Drives both the rendered marker position/heading and the camera pan so
+  /// they move in lockstep instead of the camera jumping once per tick.
+  void _onMarkerAnimTick() {
+    if (_latTween == null) return;
+    _renderLat = _latTween!.evaluate(_markerAnim);
+    _renderLng = _lngTween!.evaluate(_markerAnim);
+    _renderHeading = (_headingTween!.evaluate(_markerAnim)) % 360;
+
+    final isNavigating = _state.isNavigating || _isDemoMode;
+    if (isNavigating && !_isUserDragging) {
+      final pos = LatLng(_renderLat!, _renderLng!);
+      if (_isHeadingUp) {
+        _mapController.moveAndRotate(
+          pos,
+          _mapController.camera.zoom.clamp(15.5, 18.0),
+          -_renderHeading!,
+        );
+      } else {
+        _mapController.move(pos, _mapController.camera.zoom);
+      }
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+
+    _markerAnim.addListener(_onMarkerAnimTick);
 
     // Share the unified LocationService with AndroidSensorAdapter
     _liveSensorAdapter = AndroidSensorAdapter(locationService: _location);
@@ -62,12 +134,36 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     // 1. Initialize the IDR Engine
     _idrEngine.initialize();
 
+    // Load offline road network map database for general road-network matching
+    rootBundle.loadString('assets/data/road_network_demo.json').then((jsonStr) {
+      _idrEngine.loadRoadNetworkJson(jsonStr);
+    }).catchError((_) {});
+
     // 2. Subscribe to 10 Hz IDR Engine Telemetry Output
     _telemetrySubscription = _idrEngine.telemetryStream.listen((telemetry) {
       if (!mounted) return;
       final newPos = LatLng(telemetry.latitude, telemetry.longitude);
 
-      // Update route progress state
+      // Log high-rate telemetry to active on-device session file for post-drive plotting
+      if (_logger.isLogging) {
+        _logger.logTelemetry(telemetry);
+      }
+
+      // High-frequency tier: update telemetry ValueNotifier and vehicle glide
+      _telemetryNotifier.value = telemetry;
+      _vehicleHeading = telemetry.heading;
+      _updateMarkerAnimation(telemetry.latitude, telemetry.longitude, telemetry.heading);
+
+      // Route polyline slicing (statically typed without dynamic casts)
+      if (telemetry.slicedRoutePoints != null && _state.route != null) {
+        _remainingPoints = telemetry.slicedRoutePoints!;
+        final routePoints = _state.route!.points;
+        final segIdx = telemetry.currentSegmentIndex;
+        _traveledPoints = routePoints.sublist(0, min(segIdx + 1, routePoints.length));
+        _traveledPoints.add(newPos);
+      }
+
+      // Low-frequency tier: Step index & maneuver distance tracking
       int stepIdx = _state.currentStepIndex;
       double distNext = _state.distanceToNextStepMeters;
       if (_state.route != null && _state.route!.steps.isNotEmpty) {
@@ -83,46 +179,37 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         }
       }
 
-      setState(() {
-        _telemetry = telemetry;
-        _vehicleHeading = telemetry.heading;
+      // Frequency tiering guard: Only invoke setState when low-frequency route state changes!
+      final bool stepChanged = stepIdx != _state.currentStepIndex;
+      final bool offRouteChanged = telemetry.isOffRoute != _state.isOffRoute;
+      final bool distChanged = (_state.distanceToNextStepMeters - distNext).abs() > 25.0;
+
+      if (stepChanged || offRouteChanged || distChanged) {
+        setState(() {
+          _state = _state.copyWith(
+            userLocation: newPos,
+            currentStepIndex: stepIdx,
+            distanceToNextStepMeters: distNext,
+            remainingDistanceMeters: telemetry.remainingDistanceMeters,
+            isOffRoute: telemetry.isOffRoute,
+          );
+        });
+      } else {
+        // Update userLocation and remainingDistance in _state without triggering full-screen setState
         _state = _state.copyWith(
           userLocation: newPos,
-          currentStepIndex: stepIdx,
           distanceToNextStepMeters: distNext,
           remainingDistanceMeters: telemetry.remainingDistanceMeters,
-          isOffRoute: telemetry.isOffRoute,
         );
-
-        // Update polyline slicing
-        if (telemetry.slicedRoutePoints != null && _state.route != null) {
-          _remainingPoints = (telemetry.slicedRoutePoints as List)
-              .map((p) => p as LatLng)
-              .toList();
-          // Traveled = route start to current position
-          final routePoints = _state.route!.points;
-          final segIdx = telemetry.currentSegmentIndex;
-          _traveledPoints = routePoints.sublist(0, min(segIdx + 1, routePoints.length));
-          _traveledPoints.add(newPos);
-        }
-      });
-
-      // Camera tracking during active navigation
-      if ((_state.isNavigating || _isDemoMode) && !_isUserDragging) {
-        if (_isHeadingUp) {
-          _mapController.moveAndRotate(
-            newPos,
-            _mapController.camera.zoom.clamp(15.5, 18.0),
-            -_vehicleHeading,
-          );
-        } else {
-          _mapController.move(newPos, _mapController.camera.zoom);
-        }
       }
 
-      // Auto-reroute if off-route for extended time
+      // Auto-reroute if off-route for extended time (throttled to 15s to prevent network spin in tunnels)
       if (telemetry.isOffRoute && !_isRerouting && !_isDemoMode && _state.destination != null) {
-        _autoReroute();
+        final now = DateTime.now();
+        if (_lastRerouteAttempt == null || now.difference(_lastRerouteAttempt!).inSeconds >= 15) {
+          _lastRerouteAttempt = now;
+          _autoReroute();
+        }
       }
     });
 
@@ -170,6 +257,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     try {
       final route = await _routes.calculate(start: _state.userLocation!, end: _state.destination!);
       if (!mounted) return;
+      _cachedRoute = route;
       setState(() {
         _state = _state.copyWith(route: route, isOffRoute: false);
         _traveledPoints = [];
@@ -177,7 +265,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       });
       _idrEngine.setRoute(route.points);
     } catch (_) {
-      // Silently fail reroute
+      // Retain _cachedRoute and existing polyline when offline in a tunnel or underground structure
+      if (_cachedRoute != null && _state.route == null) {
+        setState(() => _state = _state.copyWith(route: _cachedRoute));
+      }
     } finally {
       _isRerouting = false;
     }
@@ -250,6 +341,22 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     if (_state.route == null) return;
     final startPoint = _state.userLocation ?? _state.route!.points.first;
 
+    // Cache active route so offline tunnel driving never drops polyline/guidance
+    _cachedRoute = _state.route;
+    _dismissedCalibrationNotice = false;
+
+    // Enable wakelock to prevent screen sleep and sensor throttling mid-drive
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {}
+
+    // Start on-device drive session CSV logging
+    await _logger.startLogging();
+    _rawGnssSubscription?.cancel();
+    _rawGnssSubscription = _liveSensorAdapter.rawGnssStream.listen((gnss) {
+      _logger.recordRawGnss(gnss);
+    });
+
     setState(() {
       _isDemoMode = false;
       _state = _state.copyWith(isNavigating: true);
@@ -268,21 +375,102 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   /// Stops dead reckoning navigation
   Future<void> _stopNavigation() async {
+    // Disable wakelock
+    try {
+      await WakelockPlus.disable();
+    } catch (_) {}
+
+    _rawGnssSubscription?.cancel();
+    _rawGnssSubscription = null;
+    final logPath = await _logger.stopLogging();
+
     await _idrEngine.stop();
+    _telemetryNotifier.value = null;
     setState(() {
       _state = _state.copyWith(isNavigating: false);
-      _telemetry = null;
       _traveledPoints = [];
       _remainingPoints = [];
     });
     // Reset camera to north up
     _mapController.rotate(0);
+
+    if (logPath != null && mounted) {
+      final fileName = logPath.replaceAll(r'\', '/').split('/').last;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Drive session saved: $fileName',
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+          action: SnackBarAction(
+            label: 'SHARE / PLOT',
+            textColor: const Color(0xFF38BDF8),
+            onPressed: () => _logger.shareCurrentLog(),
+          ),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    }
+  }
+
+  /// Toggles manual GNSS blackout for controlled filming of dead-reckoning transitions
+  void _toggleForceBlackout() {
+    final isBlocked = _idrEngine.toggleGnssForceBlocked();
+    HapticFeedback.heavyImpact();
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: isBlocked ? const Color(0xFFDC2626) : const Color(0xFF10B981),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        content: Row(
+          children: [
+            Icon(
+              isBlocked
+                  ? Icons.signal_cellular_connected_no_internet_4_bar_rounded
+                  : Icons.satellite_alt_rounded,
+              color: Colors.white,
+              size: 22,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                isBlocked
+                    ? 'SIMULATED GNSS OUTAGE ACTIVATED\nRunning Dead-Reckoning (ESKF + VelocityCNN + NHC)'
+                    : 'GNSS RESTORED\nSatellites reacquired • ESKF Kalman correction active',
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12, height: 1.3),
+              ),
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   /// Launch Demo Mode using recorded dataset replay
   Future<void> _startDemoMode() async {
     setState(() => _message = 'Loading Demo Mode test dataset…');
     try {
+      // Enable wakelock for demo mode
+      try {
+        await WakelockPlus.enable();
+      } catch (_) {}
+
       await _replayAdapter.loadDataset();
 
       // Use actual dataset ground-truth coordinates from IO-VNBD test_dataset.csv
@@ -352,11 +540,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _stopDemoMode() async {
+    try {
+      await WakelockPlus.disable();
+    } catch (_) {}
+
     await _idrEngine.stop();
+    _telemetryNotifier.value = null;
     setState(() {
       _isDemoMode = false;
       _state = _state.copyWith(isNavigating: false);
-      _telemetry = null;
       _traveledPoints = [];
       _remainingPoints = [];
     });
@@ -388,6 +580,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    try {
+      WakelockPlus.disable();
+    } catch (_) {}
+    _markerAnim.dispose();
+    _telemetryNotifier.dispose();
+    _rawGnssSubscription?.cancel();
+    _logger.stopLogging();
     _locationSubscription?.cancel();
     _telemetrySubscription?.cancel();
     _idrEngine.dispose();
@@ -465,14 +664,49 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     ],
                   ),
 
+                // Dynamic Spatial Uncertainty Circle (Tier 3.3 Confidence-Transparent UI)
+                // Grows during dead reckoning and contracts down upon GNSS reacquisition
+                if (_state.userLocation != null)
+                  ValueListenableBuilder<NavigationTelemetry?>(
+                    valueListenable: _telemetryNotifier,
+                    builder: (context, telem, _) {
+                      final double uncertaintyM = (telem?.positionUncertainty ?? 4.0).clamp(3.0, 60.0);
+                      final bool isDr = telem?.navMode == NavMode.deadReckoning;
+                      final Color circleColor = isDr ? const Color(0xFFF59E0B) : const Color(0xFF10B981);
+                      return CircleLayer(
+                        circles: [
+                          CircleMarker(
+                            point: LatLng(
+                              _renderLat ?? _state.userLocation!.latitude,
+                              _renderLng ?? _state.userLocation!.longitude,
+                            ),
+                            radius: uncertaintyM,
+                            useRadiusInMeter: true,
+                            color: circleColor.withValues(alpha: 0.16),
+                            borderColor: circleColor.withValues(alpha: 0.70),
+                            borderStrokeWidth: 1.5,
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+
                 MarkerLayer(
                   markers: [
                     if (_state.userLocation != null)
                       Marker(
-                        point: _state.userLocation!,
+                        point: LatLng(
+                          _renderLat ?? _state.userLocation!.latitude,
+                          _renderLng ?? _state.userLocation!.longitude,
+                        ),
                         width: 60,
                         height: 60,
-                        child: _directionalVehicleMarker(),
+                        child: RepaintBoundary(
+                          child: AnimatedBuilder(
+                            animation: _markerAnim,
+                            builder: (context, _) => _directionalVehicleMarker(),
+                          ),
+                        ),
                       ),
                     if (_state.destination != null)
                       Marker(
@@ -523,16 +757,44 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
-          // 4. Telemetry HUD (active during navigation or demo)
-          if (_telemetry != null && isNavigating)
+          // 4. Telemetry HUD (active during navigation or demo, scoped high-frequency rebuild)
+          if (isNavigating)
             Positioned(
               left: 0,
               right: 0,
-              top: MediaQuery.of(context).padding.top + (_state.route != null && _state.route!.steps.isNotEmpty ? 135 : 8),
-              child: TelemetryHud(telemetry: _telemetry!),
+              top: MediaQuery.of(context).padding.top +
+                  (_state.route != null && _state.route!.steps.isNotEmpty ? 135 : 8),
+              child: ValueListenableBuilder<NavigationTelemetry?>(
+                valueListenable: _telemetryNotifier,
+                builder: (context, telem, _) {
+                  if (telem == null) return const SizedBox.shrink();
+                  return TelemetryHud(
+                    telemetry: telem,
+                    onToggleForceBlackout: !_isDemoMode ? _toggleForceBlackout : null,
+                    onShareLog: _logger.isLogging ? () => _logger.shareCurrentLog() : null,
+                    isLogging: _logger.isLogging,
+                  );
+                },
+              ),
             ),
 
-          // 5. Map Action Controls (Compass, Recenter, My Location)
+          // 4b. Calibration & Alignment Onboarding Overlay (during initial live driving until converged)
+          if (isNavigating && !_isDemoMode && !_dismissedCalibrationNotice)
+            Positioned(
+              left: 16,
+              right: 16,
+              top: MediaQuery.of(context).padding.top +
+                  (_state.route != null && _state.route!.steps.isNotEmpty ? 220 : 96),
+              child: ValueListenableBuilder<NavigationTelemetry?>(
+                valueListenable: _telemetryNotifier,
+                builder: (context, telem, _) {
+                  if (telem == null) return const SizedBox.shrink();
+                  return _buildCalibrationOverlay(telem);
+                },
+              ),
+            ),
+
+          // 5. Map Action Controls (Compass, Recenter, My Location, Blackout Toggle)
           Positioned(
             right: 18,
             bottom: isNavigating
@@ -540,6 +802,23 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 : (_state.route != null ? 280 : 28),
             child: Column(
               children: [
+                if (isNavigating && !_isDemoMode) ...[
+                  ValueListenableBuilder<NavigationTelemetry?>(
+                    valueListenable: _telemetryNotifier,
+                    builder: (context, telem, _) {
+                      final isBlocked = telem?.isGnssForceBlocked ?? false;
+                      return _roundControl(
+                        isBlocked
+                            ? Icons.signal_cellular_connected_no_internet_4_bar_rounded
+                            : Icons.satellite_alt_rounded,
+                        _toggleForceBlackout,
+                        tooltip: isBlocked ? 'Restore GNSS' : 'Simulate Blackout',
+                        color: isBlocked ? const Color(0xFFEF4444) : const Color(0xFF34D399),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 if (isNavigating) ...[
                   _roundControl(
                     _isHeadingUp ? Icons.explore_rounded : Icons.explore_off_rounded,
@@ -558,6 +837,26 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       color: const Color(0xFF1A73E8),
                     ),
                   ),
+                if (isNavigating) ...[
+                  _roundControl(
+                    _getVehicleIcon(_idrEngine.vehicleProfile.type),
+                    _cycleVehicleProfile,
+                    tooltip: 'Vehicle: ${_idrEngine.vehicleProfile.name}',
+                    color: const Color(0xFF6366F1),
+                  ),
+                  const SizedBox(height: 10),
+                  _roundControl(
+                    _idrEngine.isEmergencyMode
+                        ? Icons.local_hospital_rounded
+                        : Icons.local_hospital_outlined,
+                    _toggleEmergencyMode,
+                    tooltip: 'Emergency Responder Mode',
+                    color: _idrEngine.isEmergencyMode
+                        ? const Color(0xFFEF4444)
+                        : Colors.white70,
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 _roundControl(Icons.my_location_rounded, () {
                   if (_state.userLocation != null) {
                     _mapController.move(_state.userLocation!, 16);
@@ -611,6 +910,21 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
+          // 8b. Proactive Differentiator Alert Banners (Denial Lookahead, Spoofing, Hard Braking, Wrong-Way)
+          if (isNavigating)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: _isDemoMode ? 190 : 170,
+              child: ValueListenableBuilder<NavigationTelemetry?>(
+                valueListenable: _telemetryNotifier,
+                builder: (context, telem, _) {
+                  if (telem == null) return const SizedBox.shrink();
+                  return _buildAlertBanners(telem);
+                },
+              ),
+            ),
+
           // 9. Off-Route Warning Banner
           if (_state.isOffRoute && isNavigating && !_isDemoMode)
             Positioned(
@@ -635,72 +949,105 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         ? '${(distMeters / 1000).toStringAsFixed(1)} km'
         : '${distMeters.toInt()} m';
 
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF1B8A4F), Color(0xFF10B981)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(20)),
-        boxShadow: [BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4))],
-      ),
-      child: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-          child: Row(
-            children: [
-              // Maneuver Icon
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.20),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(
-                  _getManeuverIcon(step.maneuver, step.modifier),
-                  color: Colors.white,
-                  size: 30,
-                ),
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.88),
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
+            border: Border(
+              bottom: BorderSide(
+                color: Colors.white.withValues(alpha: 0.15),
+                width: 0.8,
               ),
-              const SizedBox(width: 16),
-              // Distance and instruction
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'In $distText',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 26,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      step.instruction,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.90),
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Close navigation button
-              IconButton(
-                onPressed: _isDemoMode ? _stopDemoMode : _stopNavigation,
-                icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.35),
+                blurRadius: 20,
+                offset: const Offset(0, 8),
               ),
             ],
+          ),
+          child: SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 16, 16),
+              child: Row(
+                children: [
+                  // Maneuver Icon Badge (iOS emerald green gradient pill)
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF10B981), Color(0xFF059669)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.40),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Icon(
+                      _getManeuverIcon(step.maneuver, step.modifier),
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  // Distance and instruction
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'In $distText',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.5,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          step.instruction,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.85),
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w500,
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // iOS close button
+                  IosIconButton(
+                    icon: Icons.close_rounded,
+                    onPressed: _isDemoMode ? _stopDemoMode : _stopNavigation,
+                    size: 38,
+                    iconSize: 18,
+                    backgroundColor: Colors.white.withValues(alpha: 0.12),
+                    foregroundColor: Colors.white,
+                    tooltip: 'Exit navigation',
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -725,106 +1072,137 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     return Icons.straight_rounded;
   }
 
-  // ─── Bottom Trip Status Bar ───────────────────────────────────────────
+  // ─── Bottom Trip Status Bar (Dark Frosted Glass + High-Freq Tier) ────
 
   Widget _buildBottomTripBar() {
     final remainDist = _state.remainingDistanceMeters;
     final route = _state.route;
-    final speed = _telemetry?.speedKmh ?? 0.0;
 
-    // Estimate remaining time based on current speed
-    double remainMin = 0;
-    if (route != null && speed > 2.0) {
-      remainMin = (remainDist / (speed / 3.6)) / 60.0;
-    } else if (route != null) {
-      remainMin = route.durationSeconds / 60.0;
-    }
+    return ValueListenableBuilder<NavigationTelemetry?>(
+      valueListenable: _telemetryNotifier,
+      builder: (context, telemetry, _) {
+        final speed = telemetry?.speedKmh ?? 0.0;
+        final navMode = telemetry?.navMode ?? NavMode.gnssIns;
 
-    // ETA
-    final now = DateTime.now();
-    final eta = now.add(Duration(minutes: remainMin.round()));
-    final etaStr = '${eta.hour}:${eta.minute.toString().padLeft(2, '0')}';
+        double remainMin = 0;
+        if (route != null && speed > 2.0) {
+          remainMin = (remainDist / (speed / 3.6)) / 60.0;
+        } else if (route != null) {
+          remainMin = route.durationSeconds / 60.0;
+        }
 
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        boxShadow: [BoxShadow(color: Color(0x26000000), blurRadius: 24, offset: Offset(0, -4))],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              _tripMetric(etaStr, 'ETA'),
-              _tripMetric('${remainMin.toInt()} min', 'REMAIN'),
-              _tripMetric(
-                remainDist >= 1000
-                    ? '${(remainDist / 1000).toStringAsFixed(1)} km'
-                    : '${remainDist.toInt()} m',
-                'DISTANCE',
-              ),
-              _tripMetric('${speed.toInt()}', 'km/h'),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              // IDR status chip
-              if (_telemetry != null)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: _telemetry!.navMode == NavMode.deadReckoning
-                        ? const Color(0xFFFEF3C7)
-                        : const Color(0xFFD1FAE5),
-                    borderRadius: BorderRadius.circular(8),
+        final now = DateTime.now();
+        final eta = now.add(Duration(minutes: remainMin.round()));
+        final etaStr = '${eta.hour}:${eta.minute.toString().padLeft(2, '0')}';
+
+        return ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A).withValues(alpha: 0.90),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+                border: Border(
+                  top: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.15),
+                    width: 0.8,
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        _telemetry!.navMode == NavMode.deadReckoning
-                            ? Icons.explore_rounded
-                            : Icons.satellite_alt_rounded,
-                        size: 14,
-                        color: _telemetry!.navMode == NavMode.deadReckoning
-                            ? const Color(0xFFB45309)
-                            : const Color(0xFF047857),
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        _telemetry!.navModeString,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: _telemetry!.navMode == NavMode.deadReckoning
-                              ? const Color(0xFFB45309)
-                              : const Color(0xFF047857),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.35),
+                    blurRadius: 28,
+                    offset: const Offset(0, -6),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        _tripMetric(etaStr, 'ETA'),
+                        _tripMetric('${remainMin.toInt()} min', 'REMAIN'),
+                        _tripMetric(
+                          remainDist >= 1000
+                              ? '${(remainDist / 1000).toStringAsFixed(1)} km'
+                              : '${remainDist.toInt()} m',
+                          'DISTANCE',
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-              const Spacer(),
-              // End Navigation button
-              SizedBox(
-                height: 42,
-                child: FilledButton.icon(
-                  onPressed: _stopNavigation,
-                  icon: const Icon(Icons.close_rounded, size: 18),
-                  label: const Text('EXIT', style: TextStyle(fontWeight: FontWeight.w700)),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFEF4444),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                        _tripMetric('${speed.toInt()}', 'km/h'),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        // IDR status glass pill
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: navMode == NavMode.deadReckoning
+                                ? const Color(0xFFF59E0B).withValues(alpha: 0.18)
+                                : const Color(0xFF10B981).withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: navMode == NavMode.deadReckoning
+                                  ? const Color(0xFFF59E0B).withValues(alpha: 0.40)
+                                  : const Color(0xFF10B981).withValues(alpha: 0.40),
+                              width: 0.8,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                navMode == NavMode.deadReckoning
+                                    ? Icons.explore_rounded
+                                    : Icons.satellite_alt_rounded,
+                                size: 14,
+                                color: navMode == NavMode.deadReckoning
+                                    ? const Color(0xFFFBBF24)
+                                    : const Color(0xFF34D399),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                navMode == NavMode.deadReckoning
+                                    ? 'DEAD RECKONING'
+                                    : 'GNSS FIX (10Hz)',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.5,
+                                  color: navMode == NavMode.deadReckoning
+                                      ? const Color(0xFFFBBF24)
+                                      : const Color(0xFF34D399),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Spacer(),
+                        // Exit Button
+                        IosGlassButton(
+                          onPressed: _stopNavigation,
+                          icon: const Icon(Icons.close_rounded, size: 16, color: Colors.white),
+                          label: 'EXIT',
+                          isDestructive: true,
+                          height: 38,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          borderRadius: 12,
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -835,12 +1213,22 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         children: [
           Text(
             value,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF172033)),
+            style: const TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
           ),
           const SizedBox(height: 2),
           Text(
             label.toUpperCase(),
-            style: const TextStyle(fontSize: 9, letterSpacing: .8, color: Color(0xFF94A3B8), fontWeight: FontWeight.w700),
+            style: const TextStyle(
+              fontSize: 9,
+              letterSpacing: .8,
+              color: Color(0xFF94A3B8),
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
@@ -850,32 +1238,60 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   // ─── Off-Route Warning Banner ──────────────────────────────────────
 
   Widget _offRouteBanner() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFEF3C7),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8)],
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.wrong_location_rounded, color: Color(0xFFB45309), size: 22),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Off Route', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFB45309))),
-                Text(
-                  _isRerouting ? 'Rerouting…' : 'Recalculating route…',
-                  style: const TextStyle(fontSize: 12, color: Color(0xFF92400E)),
-                ),
-              ],
-            ),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.88),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.50), width: 1.2),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.20),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
-        ],
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.20),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.wrong_location_rounded, color: Color(0xFFFBBF24), size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Off Planned Route',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _isRerouting ? 'Rerouting with OSRM…' : 'Road graph fallback tracking active',
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -883,25 +1299,43 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   // ─── Demo Mode Toggle ──────────────────────────────────────────────
 
   Widget _demoModeBadgeButton() {
-    return Container(
-      decoration: BoxDecoration(
-        color: _isDemoMode ? const Color(0xFF10B981) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2))],
-      ),
-      child: IconButton(
-        onPressed: () {
-          if (_isDemoMode) {
-            _stopDemoMode();
-          } else {
-            _showDemoConfirmationSheet();
-          }
-        },
-        icon: Icon(
-          Icons.science_rounded,
-          color: _isDemoMode ? Colors.white : const Color(0xFF1A73E8),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          decoration: BoxDecoration(
+            color: _isDemoMode
+                ? const Color(0xFF10B981).withValues(alpha: 0.85)
+                : const Color(0xFF0F172A).withValues(alpha: 0.72),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.15),
+              width: 0.8,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.25),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: IosIconButton(
+            icon: Icons.science_rounded,
+            onPressed: () {
+              if (_isDemoMode) {
+                _stopDemoMode();
+              } else {
+                _showDemoConfirmationSheet();
+              }
+            },
+            size: 48,
+            iconSize: 22,
+            foregroundColor: _isDemoMode ? Colors.white : const Color(0xFF38BDF8),
+            tooltip: 'Demo Mode (Simulate GNSS Outage)',
+          ),
         ),
-        tooltip: 'Demo Mode (Simulate GNSS Outage)',
       ),
     );
   }
@@ -909,72 +1343,142 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _showDemoConfirmationSheet() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF0F172A),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
       builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 30),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Row(
-                children: [
-                  Icon(Icons.science_rounded, color: Color(0xFF38BDF8), size: 24),
-                  SizedBox(width: 10),
-                  Text(
-                    'IDR DEMO MODE',
-                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Demonstrates the complete Intelligent Dead Reckoning engine using recorded 10 Hz vehicular IMU data with a 45-second GNSS blackout.\n\nRuns on-device VelocityCNN, 15-state ESKF, NHC, and road-snapped map matching entirely offline.',
-                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-              ),
-              const SizedBox(height: 18),
-              const Row(
-                children: [
-                  Icon(Icons.description_outlined, color: Colors.white54, size: 18),
-                  SizedBox(width: 8),
-                  Text(
-                    'Dataset: IO-VNBD (100 Hz, 120s)',
-                    style: TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _startDemoMode();
-                  },
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text('START DEMO NAVIGATION'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF10B981),
-                    minimumSize: const Size.fromHeight(50),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        return ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(24, 14, 24, 32),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A).withValues(alpha: 0.94),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                border: Border(
+                  top: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    width: 0.8,
                   ),
                 ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.40),
+                    blurRadius: 32,
+                    offset: const Offset(0, -8),
+                  ),
+                ],
               ),
-            ],
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // iOS sheet drag handle
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 5,
+                      margin: const EdgeInsets.only(bottom: 18),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.28),
+                        borderRadius: BorderRadius.circular(2.5),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF38BDF8).withValues(alpha: 0.18),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.science_rounded, color: Color(0xFF38BDF8), size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'IDR DEMO MODE',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.3,
+                            ),
+                          ),
+                          Text(
+                            'Hardware-in-the-loop GNSS Blackout Simulation',
+                            style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Demonstrates full Intelligent Dead Reckoning using vehicular IMU telemetry with a 45-second total GNSS blackout.\n\nFuses on-device VelocityCNN, 15-state ESKF, Non-Holonomic Constraints (NHC), and offline road-network map matching.',
+                    style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13.5, height: 1.45),
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.10), width: 0.8),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.layers_outlined, color: Color(0xFF38BDF8), size: 18),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Dataset: IO-VNBD (100 Hz IMU, 120s sequence)',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    child: IosGlassButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _startDemoMode();
+                      },
+                      icon: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 22),
+                      label: 'START DEMO NAVIGATION',
+                      backgroundColor: const Color(0xFF10B981),
+                      height: 52,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         );
       },
     );
   }
 
-  // ─── Markers ────────────────────────────────────────────────────────
+  // ─── Markers & Overlays ─────────────────────────────────────────────
 
   Widget _directionalVehicleMarker() {
+    final telem = _telemetryNotifier.value;
+    final isDr = telem?.navMode == NavMode.deadReckoning;
+    final isCalibrated = telem?.isFullyCalibrated ?? true;
+
     return Transform.rotate(
-      angle: _vehicleHeading * (pi / 180.0),
+      angle: (_renderHeading ?? _vehicleHeading) * (pi / 180.0),
       child: Stack(
         alignment: Alignment.center,
         children: [
@@ -982,7 +1486,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             width: 52,
             height: 52,
             decoration: BoxDecoration(
-              color: const Color(0xFF1A73E8).withValues(alpha: 0.20),
+              color: isCalibrated
+                  ? const Color(0xFF007AFF).withValues(alpha: 0.20)
+                  : const Color(0xFFF59E0B).withValues(alpha: 0.20),
               shape: BoxShape.circle,
             ),
           ),
@@ -990,17 +1496,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             width: 32,
             height: 32,
             decoration: BoxDecoration(
-              color: _telemetry?.navMode == NavMode.deadReckoning
+              color: isDr
                   ? const Color(0xFFF59E0B)
-                  : const Color(0xFF1A73E8),
+                  : (isCalibrated ? const Color(0xFF007AFF) : const Color(0xFF64748B)),
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 3),
               boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
             ),
-            child: const Icon(
-              Icons.navigation_rounded,
+            child: Icon(
+              isCalibrated ? Icons.navigation_rounded : Icons.gps_fixed_rounded,
               color: Colors.white,
-              size: 18,
+              size: isCalibrated ? 18 : 16,
             ),
           ),
         ],
@@ -1008,41 +1514,392 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _messageCard() => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 14)],
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.info_outline_rounded, color: Color(0xFFE55B4D)),
-            const SizedBox(width: 10),
-            Expanded(child: Text(_message!, style: const TextStyle(fontSize: 12))),
-            IconButton(
-              onPressed: () => setState(() => _message = null),
-              icon: const Icon(Icons.close_rounded, size: 18),
-            ),
-          ],
-        ),
-      );
+  /// Interactive onboarding card guiding user through stationary gravity & yaw alignment
+  Widget _buildCalibrationOverlay(NavigationTelemetry telem) {
+    if (telem.isFullyCalibrated) {
+      // Auto-dismiss 3.5 seconds after full alignment convergence
+      Future.delayed(const Duration(milliseconds: 3500), () {
+        if (mounted && !_dismissedCalibrationNotice) {
+          setState(() => _dismissedCalibrationNotice = true);
+        }
+      });
+    }
 
-  Widget _roundControl(IconData icon, VoidCallback onTap, {String? tooltip, Color? color}) => Material(
-        color: Colors.white,
-        elevation: 5,
-        shadowColor: Colors.black26,
-        shape: const CircleBorder(),
-        child: InkWell(
-          onTap: onTap,
-          customBorder: const CircleBorder(),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Icon(icon, color: color ?? const Color(0xFF263238), size: 21),
+    final bool isGravityDone = telem.isGravityCalibrated;
+    final bool isFullyDone = telem.isFullyCalibrated;
+
+    final Color accentColor = isFullyDone
+        ? const Color(0xFF10B981)
+        : (isGravityDone ? const Color(0xFF38BDF8) : const Color(0xFFF59E0B));
+
+    final String phaseBadge = isFullyDone
+        ? 'SYSTEM LOCKED'
+        : (isGravityDone ? 'PHASE 2 / 2 • YAW ALIGNMENT' : 'PHASE 1 / 2 • CALIBRATION');
+
+    final String title = isFullyDone
+        ? 'Dead Reckoning Ready'
+        : (isGravityDone ? 'Drive Forward Straight' : 'Hold Vehicle Still');
+
+    final String subtitle = isFullyDone
+        ? 'Vehicle orientation aligned • ESKF 100 Hz fusion active'
+        : (isGravityDone
+            ? 'Drive > 10 km/h for a few seconds to lock vehicle yaw (${telem.calibrationProgressPercent}%)'
+            : 'Sampling stationary gravity vector & zero-velocity gyro bias (${telem.calibrationProgressPercent}%)');
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: accentColor.withValues(alpha: 0.45), width: 1.2),
+            boxShadow: [
+              BoxShadow(
+                color: accentColor.withValues(alpha: 0.20),
+                blurRadius: 20,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: accentColor.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      phaseBadge,
+                      style: TextStyle(
+                        color: accentColor,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      setState(() => _dismissedCalibrationNotice = true);
+                    },
+                    child: const Icon(Icons.close_rounded, size: 18, color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(
+                    isFullyDone
+                        ? Icons.check_circle_rounded
+                        : (isGravityDone ? Icons.navigation_rounded : Icons.sensors_rounded),
+                    color: accentColor,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle,
+                          style: const TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 11.5,
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              if (!isFullyDone) ...[
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: (telem.calibrationProgressPercent / 100.0).clamp(0.05, 1.0),
+                    minHeight: 4,
+                    backgroundColor: Colors.white.withValues(alpha: 0.10),
+                    valueColor: AlwaysStoppedAnimation<Color>(accentColor),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _messageCard() => ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A).withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.15), width: 0.8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                const Icon(CupertinoIcons.info_circle_fill, color: Color(0xFF38BDF8), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _message!,
+                    style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w500),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    setState(() => _message = null);
+                  },
+                  child: const Icon(CupertinoIcons.xmark_circle_fill, size: 20, color: Color(0xFF64748B)),
+                ),
+              ],
+            ),
           ),
         ),
       );
 
+  Widget _roundControl(IconData icon, VoidCallback onTap, {String? tooltip, Color? color}) => ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: GestureDetector(
+            onTap: () {
+              HapticFeedback.lightImpact();
+              onTap();
+            },
+            child: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A).withValues(alpha: 0.78),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.18), width: 0.8),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Icon(icon, color: color ?? Colors.white, size: 20),
+            ),
+          ),
+        ),
+      );
+
+  IconData _getVehicleIcon(VehicleType type) {
+    switch (type) {
+      case VehicleType.twoWheeler:
+        return Icons.two_wheeler_rounded;
+      case VehicleType.passengerCar:
+        return Icons.directions_car_rounded;
+      case VehicleType.commercialTruck:
+        return Icons.local_shipping_rounded;
+    }
+  }
+
+  void _cycleVehicleProfile() {
+    HapticFeedback.selectionClick();
+    final nextType = switch (_idrEngine.vehicleProfile.type) {
+      VehicleType.passengerCar => VehicleType.twoWheeler,
+      VehicleType.twoWheeler => VehicleType.commercialTruck,
+      VehicleType.commercialTruck => VehicleType.passengerCar,
+    };
+    final newProfile = VehicleProfile.getProfile(nextType);
+    _idrEngine.setVehicleProfile(newProfile);
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Vehicle Profile: ${newProfile.name} (ZUPT: ${newProfile.zuptAccelVarianceThreshold} m/s², NHC: ${newProfile.nhcLateralNoiseStd})'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: const Color(0xFF0F172A),
+      ),
+    );
+  }
+
+  void _toggleEmergencyMode() {
+    HapticFeedback.heavyImpact();
+    final nextState = !_idrEngine.isEmergencyMode;
+    _idrEngine.setEmergencyMode(nextState);
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(nextState
+            ? 'Emergency Responder Mode: Active (Dispatch broadcast ON)'
+            : 'Emergency Responder Mode: Deactivated'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: nextState ? const Color(0xFFDC2626) : const Color(0xFF0F172A),
+      ),
+    );
+  }
+
+  Widget _buildAlertBanners(NavigationTelemetry telem) {
+    final List<Widget> banners = [];
+
+    // 1. Denial zone lookahead / inside alert
+    if (telem.denialZoneAlert != null) {
+      final alert = telem.denialZoneAlert!;
+      banners.add(_singleAlertPill(
+        icon: alert.isInside ? Icons.shield_rounded : Icons.timer_outlined,
+        title: alert.isInside ? 'INSIDE OUTAGE ZONE' : 'TUNNEL / BLACKOUT AHEAD',
+        message: alert.bannerText,
+        color: alert.isInside ? const Color(0xFFF59E0B) : const Color(0xFF6366F1),
+      ));
+    }
+
+    // 2. Anti-spoofing alert
+    if (telem.gnssIntegrity == GnssIntegrityStatus.suspectedSpoofing ||
+        telem.gnssIntegrity == GnssIntegrityStatus.suspectedJamming) {
+      banners.add(_singleAlertPill(
+        icon: Icons.security_rounded,
+        title: 'GNSS INTERFERENCE DETECTED',
+        message: telem.gnssIntegrity == GnssIntegrityStatus.suspectedSpoofing
+            ? 'Satellite claims speed while IMU is stationary — rejecting fix, trusting INS.'
+            : 'Implausible position jump detected — rejecting corrupted signal.',
+        color: const Color(0xFFEF4444),
+      ));
+    }
+
+    // 3. Severe deceleration / collision spike
+    if (telem.isSevereDeceleration) {
+      banners.add(_singleAlertPill(
+        icon: Icons.warning_rounded,
+        title: 'HARD BRAKING SPIKE',
+        message: 'Deceleration > 0.65g detected by IMU sensors.',
+        color: const Color(0xFFFF3B30),
+      ));
+    }
+
+    // 4. Wrong-way driving
+    if (telem.isWrongWayDriving) {
+      banners.add(_singleAlertPill(
+        icon: Icons.dangerous_rounded,
+        title: 'WRONG WAY WARNING',
+        message: 'Heading opposes one-way segment traffic direction!',
+        color: const Color(0xFFFF2D55),
+      ));
+    }
+
+    // 5. Emergency Responder dispatch broadcast
+    if (telem.isEmergencyMode) {
+      banners.add(_singleAlertPill(
+        icon: Icons.local_hospital_rounded,
+        title: 'EMERGENCY RESPONDER MODE',
+        message: 'High-contrast HUD active · Live dispatch trajectory broadcast ON.',
+        color: const Color(0xFF06B6D4),
+      ));
+    }
+
+    if (banners.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: banners
+          .map((b) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: b,
+              ))
+          .toList(),
+    );
+  }
+
+  Widget _singleAlertPill({
+    required IconData icon,
+    required String title,
+    required String message,
+    required Color color,
+  }) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.20),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withValues(alpha: 0.55), width: 1.0),
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.22),
+                blurRadius: 14,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: color, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      message,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _destinationMarker() =>
-      const Icon(Icons.location_on_rounded, color: Color(0xFFE55B4D), size: 48);
+      const Icon(Icons.location_on_rounded, color: Color(0xFFEF4444), size: 48);
 }

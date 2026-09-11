@@ -17,9 +17,11 @@ class NavigateApp extends StatelessWidget {
       title: 'Navigate',
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1A73E8)),
-        scaffoldBackgroundColor: const Color(0xFFF7F9FC),
-        fontFamily: 'Arial',
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF007AFF),
+          brightness: Brightness.dark,
+        ),
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
       ),
       home: const MapScreen(),
     );

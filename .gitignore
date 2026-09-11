@@ -9,3 +9,5 @@ scratch/
 data/processed/
 /models/
 data/raw/
+app_updated/
+.pytest_cache/

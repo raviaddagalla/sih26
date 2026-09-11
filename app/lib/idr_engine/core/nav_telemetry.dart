@@ -1,3 +1,8 @@
+import 'package:latlong2/latlong.dart';
+import '../denial_map/gnss_denial_map_service.dart';
+import '../fusion/vehicle_profile.dart';
+import '../fusion/gnss_integrity_monitor.dart';
+
 enum NavMode {
   gnssIns,
   deadReckoning,
@@ -33,9 +38,25 @@ class NavigationTelemetry {
   final double? groundTruthLon;
   final double? groundTruthSpeed;
   final double? remainingDistanceMeters;
-  final List<dynamic>? slicedRoutePoints;
+  final List<LatLng>? slicedRoutePoints;
   final bool isOffRoute;
   final int currentSegmentIndex;
+  final bool isGravityCalibrated;
+  final bool isYawCalibrated;
+  final bool isFullyCalibrated;
+  final int calibrationProgressPercent;
+  final bool isGnssForceBlocked;
+
+  // Tier 1 & Tier 2 Differentiators
+  final String activeEnsembleRegime;
+  final DenialZoneAlert? denialZoneAlert;
+  final VehicleType vehicleType;
+  final GnssIntegrityStatus gnssIntegrity;
+  final double onlineCalibrationScale;
+  final double onlineCalibrationBias;
+  final bool isSevereDeceleration;
+  final bool isWrongWayDriving;
+  final bool isEmergencyMode;
 
   const NavigationTelemetry({
     required this.timestamp,
@@ -61,6 +82,20 @@ class NavigationTelemetry {
     this.slicedRoutePoints,
     this.isOffRoute = false,
     this.currentSegmentIndex = 0,
+    this.isGravityCalibrated = true,
+    this.isYawCalibrated = true,
+    this.isFullyCalibrated = true,
+    this.calibrationProgressPercent = 100,
+    this.isGnssForceBlocked = false,
+    this.activeEnsembleRegime = 'GRU (<5 m/s)',
+    this.denialZoneAlert,
+    this.vehicleType = VehicleType.passengerCar,
+    this.gnssIntegrity = GnssIntegrityStatus.healthy,
+    this.onlineCalibrationScale = 1.0,
+    this.onlineCalibrationBias = 0.0,
+    this.isSevereDeceleration = false,
+    this.isWrongWayDriving = false,
+    this.isEmergencyMode = false,
   });
 
   double get speedKmh => velocity * 3.6;

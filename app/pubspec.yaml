@@ -43,6 +43,9 @@ dependencies:
   permission_handler: ^11.0.0
   sensors_plus: ^6.1.1
   tflite_flutter: ^0.12.1
+  wakelock_plus: ^1.2.8
+  share_plus: ^10.1.2
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
@@ -56,8 +59,12 @@ flutter:
   assets:
     - assets/models/velocity_cnn.tflite
     - assets/models/velocity_cnn_20.tflite
+    - assets/models/velocity_gru.tflite
+    - assets/models/xgboost_trees.json
     - assets/models/norm_params.json
     - assets/demo/test_dataset.csv
+    - assets/data/road_network_demo.json
+    - assets/data/gnss_denial_zones.json
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

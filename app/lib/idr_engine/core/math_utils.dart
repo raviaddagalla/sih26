@@ -289,9 +289,6 @@ class GeoUtils {
   }
 
   /// Wrap angle to [-pi, pi] radians.
-  static double wrapRadians(double rad) {
-    double wrapped = (rad + pi) % (2.0 * pi);
-    if (wrapped < 0) wrapped += 2.0 * pi;
-    return wrapped - pi;
-  }
+  /// Shortest signed angular difference in degrees: a - b.
+  static double angleDiffDeg(double a, double b) => wrapDegrees(a - b);
 }

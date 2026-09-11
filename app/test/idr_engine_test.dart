@@ -78,7 +78,8 @@ void main() {
         initSpeed: 0.0,
       );
 
-      // Inject AI forward velocity measurement: 12.5 m/s
+      // Inject AI forward velocity measurement: 12.5 m/s (Kalman update converges)
+      eskf.updateMlVelocity(12.5, 0.25);
       eskf.updateMlVelocity(12.5, 0.25);
       expect(eskf.v.x, closeTo(12.5, 2.0));
 
@@ -182,15 +183,15 @@ void main() {
 
       // Point slightly east of route (10m away)
       const nearPoint = LatLng(24.3650, 88.6201);
-      final (snappedNear, confNear, _) = matcher.match(nearPoint);
-      expect(confNear, greaterThan(0.5));
-      expect(snappedNear.longitude, closeTo(88.6200, 0.00008));
+      final resNear = matcher.match(nearPoint);
+      expect(resNear.confidence, greaterThan(0.5));
+      expect(resNear.snappedPosition.longitude, closeTo(88.6200, 0.00008));
 
       // Point far away from route (500m away)
       const farPoint = LatLng(24.3650, 88.6280);
-      final (snappedFar, confFar, _) = matcher.match(farPoint);
-      expect(confFar, equals(0.0)); // Off-route, no forced snapping
-      expect(snappedFar.longitude, equals(farPoint.longitude));
+      final resFar = matcher.match(farPoint);
+      expect(resFar.confidence, equals(0.0)); // Off-route, no forced snapping
+      expect(resFar.snappedPosition.longitude, equals(farPoint.longitude));
     });
   });
 

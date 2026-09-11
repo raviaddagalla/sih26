@@ -32,6 +32,15 @@ class DatasetReplayAdapter implements SensorDataSource {
   bool get isPaused => _isPaused;
 
   @override
+  bool isGnssForceBlocked = false;
+
+  @override
+  bool toggleGnssForceBlocked() {
+    isGnssForceBlocked = !isGnssForceBlocked;
+    return isGnssForceBlocked;
+  }
+
+  @override
   String get sourceName => 'Dataset Replay (${assetPath.split('/').last})';
 
   List<ReplayRow> _rows = [];

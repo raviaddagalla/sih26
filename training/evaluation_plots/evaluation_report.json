@@ -1,0 +1,15 @@
+{
+  "sequence_duration_sec": 119.99000000000001,
+  "total_distance_m": 597.2449951171875,
+  "velocity_rmse_ms": 1.8181771039962769,
+  "velocity_rmse_kmh": 6.545437335968018,
+  "velocity_mae_kmh": 4.9611124992370605,
+  "r2_score": -0.360477089881897,
+  "drift_error_m": 71.48611450195312,
+  "drift_percentage": 11.969311603511484,
+  "benchmarks": {
+    "drift_less_than_10_percent": false,
+    "drift_under_5m_per_50m": false,
+    "drift_under_100m_per_1km": false
+  }
+}

@@ -11,6 +11,7 @@ import '../idr_engine/core/gnss_sample.dart';
 class AndroidSensorAdapter implements SensorDataSource {
   final _imuController = StreamController<ImuSample>.broadcast();
   final _gnssController = StreamController<GnssSample>.broadcast();
+  final _rawGnssController = StreamController<GnssSample>.broadcast();
 
   @override
   Stream<ImuSample> get imuStream => _imuController.stream;
@@ -18,8 +19,23 @@ class AndroidSensorAdapter implements SensorDataSource {
   @override
   Stream<GnssSample> get gnssStream => _gnssController.stream;
 
+  /// Raw GNSS stream that continues streaming true GPS fixes even when
+  /// [isGnssForceBlocked] is active, allowing continuous ground-truth logging.
+  Stream<GnssSample> get rawGnssStream => _rawGnssController.stream;
+
   bool _isRunning = false;
   bool _isPaused = false;
+
+  /// Debug / filming toggle: when true, GNSS fixes are withheld from the IDR engine
+  /// (forcing genuine dead-reckoning), but still emitted on [rawGnssStream] for logging.
+  @override
+  bool isGnssForceBlocked = false;
+
+  @override
+  bool toggleGnssForceBlocked() {
+    isGnssForceBlocked = !isGnssForceBlocked;
+    return isGnssForceBlocked;
+  }
 
   @override
   bool get isRunning => _isRunning;
@@ -136,6 +152,15 @@ class AndroidSensorAdapter implements SensorDataSource {
       heading: heading,
       isAvailable: isAvailable,
     );
+
+    // Continuous ground-truth logging regardless of simulated blackout
+    _rawGnssController.add(sample);
+
+    // Gate output to navigation engine during controlled blackout testing
+    if (isGnssForceBlocked) {
+      return;
+    }
+
     _gnssController.add(sample);
   }
 
@@ -210,5 +235,6 @@ class AndroidSensorAdapter implements SensorDataSource {
     stop();
     _imuController.close();
     _gnssController.close();
+    _rawGnssController.close();
   }
 }

@@ -13,6 +13,10 @@ abstract class SensorDataSource {
   bool get isPaused;
   String get sourceName;
 
+  /// Whether GNSS fixes are temporarily blocked for filming/testing dead reckoning
+  bool get isGnssForceBlocked => false;
+  bool toggleGnssForceBlocked() => false;
+
   Future<void> start();
   Future<void> stop();
   void pause();

@@ -40,13 +40,12 @@ class VelocityCnnService {
   /// Runs inference given the preprocessor's sliding window.
   /// Returns predicted forward velocity in m/s.
   (double velocity, double stationaryProb) predict(ImuPreprocessor preprocessor) {
-    if (preprocessor.isStationary) {
-      _lastPredictedVelocity = 0.0;
-      _lastStationaryScore = 1.0;
-      return (0.0, 1.0);
-    }
-
     if (!_isLoaded || _interpreter == null || !preprocessor.isWindowReady) {
+      if (preprocessor.isStationary) {
+        _lastPredictedVelocity = 0.0;
+        _lastStationaryScore = 1.0;
+        return (0.0, 1.0);
+      }
       // Fallback: estimate from forward acceleration and gyro
       return _runFallback(preprocessor);
     }
@@ -71,11 +70,20 @@ class VelocityCnnService {
       _lastInferenceLatencyMs = stopwatch.elapsedMicroseconds / 1000.0;
 
       final rawVelocity = (outputVelocity[0] as num).toDouble();
-      final stationary = (outputStationary[0] as num).toDouble();
+      final statLogit = (outputStationary[0] as num).toDouble();
+      // Sigmoid to obtain probability [0.0, 1.0]
+      final cnnStationaryProb = 1.0 / (1.0 + exp(-statLogit.clamp(-15.0, 15.0)));
 
-      // Ensure non-negative forward speed
-      _lastPredictedVelocity = max(0.0, rawVelocity);
-      _lastStationaryScore = stationary;
+      // Fused stationary decision:
+      // Stands confirmed if physical ZUPT detected standstill OR CNN stationary head >= 0.85
+      final bool isStationary = preprocessor.isStationary || (cnnStationaryProb >= 0.85);
+
+      if (isStationary) {
+        _lastPredictedVelocity = 0.0;
+      } else {
+        _lastPredictedVelocity = max(0.0, rawVelocity);
+      }
+      _lastStationaryScore = max(cnnStationaryProb, preprocessor.stationaryScore);
 
       return (_lastPredictedVelocity, _lastStationaryScore);
     } catch (e) {

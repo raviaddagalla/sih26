@@ -20,10 +20,14 @@ class ImuPreprocessor {
   final List<double> means;
   final List<double> stds;
 
-  // Adaptive ZUPT state
+  // Adaptive ZUPT state: Dual-criterion (gyro norm + accel variance)
   bool _isStationary = false;
   double _stationaryScore = 0.0;
   final List<double> _gyroNormBuffer = [];
+  final List<double> _accelNormBuffer = [];
+
+  double zuptGyroThreshold = 0.07;
+  double zuptAccelVarianceThreshold = 0.25;
 
   bool get isStationary => _isStationary;
   double get stationaryScore => _stationaryScore;
@@ -87,12 +91,18 @@ class ImuPreprocessor {
       _windowBuffer.removeAt(0);
     }
 
-    // Adaptive ZUPT: When vehicle is stopped at a signal or parking,
-    // filtered angular rate is very small even if the single-cylinder engine idles
+    // Adaptive ZUPT: Dual-criterion (gyro angular rate + linear accel variance)
+    // Prevents false negatives from engine vibration on idling two-wheelers/scooters
     final gyroNorm = sqrt(_filteredGx * _filteredGx + _filteredGy * _filteredGy + _filteredGz * _filteredGz);
     _gyroNormBuffer.add(gyroNorm);
     if (_gyroNormBuffer.length > 50) {
       _gyroNormBuffer.removeAt(0);
+    }
+
+    final accelNorm = sqrt(_filteredAx * _filteredAx + _filteredAy * _filteredAy + _filteredAz * _filteredAz);
+    _accelNormBuffer.add(accelNorm);
+    if (_accelNormBuffer.length > 50) {
+      _accelNormBuffer.removeAt(0);
     }
 
     if (_gyroNormBuffer.length >= 30) {
@@ -102,8 +112,25 @@ class ImuPreprocessor {
       }
       final meanG = sumG / _gyroNormBuffer.length;
 
-      // When stopped (even with scooter idling), mean low-pass gyro rate < 0.06 rad/s (~3.4 deg/s)
-      _isStationary = meanG < 0.06;
+      // Compute variance of accelerometer magnitude over the stationary window
+      double sumA = 0;
+      for (final a in _accelNormBuffer) {
+        sumA += a;
+      }
+      final meanA = sumA / _accelNormBuffer.length;
+      double varA = 0;
+      for (final a in _accelNormBuffer) {
+        final d = a - meanA;
+        varA += d * d;
+      }
+      varA /= _accelNormBuffer.length;
+
+      // Dual-criterion ZUPT:
+      // When stopped (even with scooter engine idling), mean gyro rate < zuptGyroThreshold
+      // AND accelerometer magnitude variance is low (varA < zuptAccelVarianceThreshold)
+      final bool gyroStationary = meanG < zuptGyroThreshold;
+      final bool accelStationary = varA < zuptAccelVarianceThreshold;
+      _isStationary = (gyroStationary && accelStationary) || (meanG < (zuptGyroThreshold * 0.5));
       _stationaryScore = _isStationary ? 1.0 : 0.0;
     }
 

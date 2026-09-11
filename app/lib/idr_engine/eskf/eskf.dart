@@ -30,7 +30,6 @@ class ESKF {
   final double gyroBiasWalk;
 
   double forwardSpeed = 0.0;
-  bool _isInitialFix = true;
 
   ESKF({
     required this.originLat,
@@ -123,58 +122,116 @@ class ESKF {
     }
 
     // 7. Covariance Propagation: P = F * P * F^T + Q
-    final FP = _multiply15(F, P);
-    final FPFt = _multiply15Transpose(FP, F);
+    final fp = _multiply15(F, P);
+    final fpFt = _multiply15Transpose(fp, F);
 
-    final qA = accelNoise * accelNoise * dt;
-    final qG = gyroNoise * gyroNoise * dt;
-    final qBa = accelBiasWalk * accelBiasWalk * dt;
-    final qBg = gyroBiasWalk * gyroBiasWalk * dt;
+    final qScale = processNoiseScale;
+    final qA = accelNoise * accelNoise * dt * qScale;
+    final qG = gyroNoise * gyroNoise * dt * qScale;
+    final qBa = accelBiasWalk * accelBiasWalk * dt * qScale;
+    final qBg = gyroBiasWalk * gyroBiasWalk * dt * qScale;
 
     for (int i = 0; i < 3; i++) {
-      FPFt[(3 + i) * 15 + (3 + i)] += qA;
-      FPFt[(6 + i) * 15 + (6 + i)] += qG;
-      FPFt[(9 + i) * 15 + (9 + i)] += qBg;
-      FPFt[(12 + i) * 15 + (12 + i)] += qBa;
+      fpFt[(3 + i) * 15 + (3 + i)] += qA;
+      fpFt[(6 + i) * 15 + (6 + i)] += qG;
+      fpFt[(9 + i) * 15 + (9 + i)] += qBg;
+      fpFt[(12 + i) * 15 + (12 + i)] += qBa;
     }
 
-    P = FPFt;
+    P = fpFt;
+    _symmetrizeP();
   }
 
-  /// Update with Deep Learning forward velocity estimate (VelocityCNN).
+  /// Dynamic scale for process noise Q (e.g. pre-tightening during tunnel approach)
+  double processNoiseScale = 1.0;
+
+  void scaleProcessNoise(double scale) {
+    processNoiseScale = scale.clamp(0.1, 2.0);
+  }
+
+  /// Update with Deep Learning forward velocity estimate (VelocityCNN / Ensemble).
+  /// Routes measurement through the ESKF Kalman update so covariance P is reduced.
   void updateMlVelocity(double vMl, double rMl) {
     if (vMl < 0) return;
-    // Adaptively blend forward speed towards AI estimate
-    final innov = vMl - forwardSpeed;
-    final k = 0.30;
-    forwardSpeed = max(0.0, forwardSpeed + k * innov);
 
     final yaw = q.toEuler().x;
-    v = Vector3(
-      forwardSpeed * cos(yaw),
-      forwardSpeed * sin(yaw),
-      0.0,
+    // Linearized forward velocity: v_forward = v_x * cos(yaw) + v_y * sin(yaw)
+    final hForward = List<double>.filled(15, 0.0)
+      ..[3] = cos(yaw)
+      ..[4] = sin(yaw);
+
+    final currentForward = v.x * cos(yaw) + v.y * sin(yaw);
+    final innov = vMl - currentForward;
+    final rVariance = max(rMl, 0.15); // Protect against degenerate variance
+
+    _updateScalarMeasurement(
+      hRow: hForward,
+      innovation: innov,
+      rVariance: rVariance,
     );
+
+    // Maintain forwardSpeed tracking
+    final newForward = v.x * cos(yaw) + v.y * sin(yaw);
+    forwardSpeed = max(0.0, newForward);
   }
 
-  /// Non-Holonomic Constraints (NHC): Lateral and vertical velocity in body frame ~ 0.
-  void updateNhc() {
+  /// Non-Holonomic Constraints (NHC):
+  /// Lateral velocity in vehicle body frame ~ 0: -v_x * sin(yaw) + v_y * cos(yaw) = 0.
+  /// Vertical velocity in vehicle body frame ~ 0: v_z = 0.
+  /// Configurable noise variances support two-wheeler banking vs passenger car rigidity.
+  void updateNhc({double lateralStd = 0.05, double verticalStd = 0.05}) {
     final yaw = q.toEuler().x;
-    v = Vector3(
-      forwardSpeed * cos(yaw),
-      forwardSpeed * sin(yaw),
-      0.0,
+    final rLat = max(lateralStd * lateralStd, 0.0001);
+    final rDown = max(verticalStd * verticalStd, 0.0001);
+
+    // 1. Lateral body velocity constraint
+    final hLat = List<double>.filled(15, 0.0)
+      ..[3] = -sin(yaw)
+      ..[4] = cos(yaw);
+    final currentLat = -v.x * sin(yaw) + v.y * cos(yaw);
+    _updateScalarMeasurement(
+      hRow: hLat,
+      innovation: 0.0 - currentLat,
+      rVariance: rLat,
     );
+
+    // 2. Down/vertical velocity constraint
+    final hDown = List<double>.filled(15, 0.0)..[5] = 1.0;
+    _updateScalarMeasurement(
+      hRow: hDown,
+      innovation: 0.0 - v.z,
+      rVariance: rDown,
+    );
+
+    // Enforce 2D vehicle planar state
+    v = Vector3(v.x, v.y, 0.0);
+    forwardSpeed = sqrt(v.x * v.x + v.y * v.y);
   }
 
   /// Zero Velocity Update (ZUPT): When stationary, vehicle speed is locked to zero.
+  /// Routes through Kalman updates to reduce velocity covariance and eliminate drift.
   void updateZupt() {
+    const rZupt = 0.001; // High confidence zero velocity
+
+    // Update vx
+    final hVx = List<double>.filled(15, 0.0)..[3] = 1.0;
+    _updateScalarMeasurement(hRow: hVx, innovation: 0.0 - v.x, rVariance: rZupt);
+
+    // Update vy
+    final hVy = List<double>.filled(15, 0.0)..[4] = 1.0;
+    _updateScalarMeasurement(hRow: hVy, innovation: 0.0 - v.y, rVariance: rZupt);
+
+    // Update vz
+    final hVz = List<double>.filled(15, 0.0)..[5] = 1.0;
+    _updateScalarMeasurement(hRow: hVz, innovation: 0.0 - v.z, rVariance: rZupt);
+
     forwardSpeed = 0.0;
     v = Vector3.zero;
   }
 
   /// GNSS position and velocity update.
-  /// Anchors local position and resets accumulated drift cleanly.
+  /// Anchors local position, resets accumulated drift cleanly,
+  /// and updates ESKF state + covariance via Kalman updates.
   void updateGnss(
     double lat,
     double lon,
@@ -185,40 +242,101 @@ class ESKF {
     final ned = GeoUtils.latLonToNed(lat, lon, originLat, originLon);
     final errorDist = sqrt((ned.x - p.x) * (ned.x - p.x) + (ned.y - p.y) * (ned.y - p.y));
 
-    if (errorDist > 25.0 || _isInitialFix) {
-      // Cleanly anchor position on initial fix or large gap without lag
+    final rPos = max(accuracy * accuracy, 1.0);
+
+    if (errorDist > 30.0) {
+      // Hard anchor on large gap
       p = Vector3(ned.x, ned.y, p.z);
-      _isInitialFix = false;
+      // Reset position covariance rows and columns
+      for (int i = 0; i < 15; i++) {
+        _setP(0, i, 0.0);
+        _setP(i, 0, 0.0);
+        _setP(1, i, 0.0);
+        _setP(i, 1, 0.0);
+      }
+      _setP(0, 0, rPos);
+      _setP(1, 1, rPos);
     } else {
-      // Smooth Kalman innovation
-      final variance = max(accuracy * accuracy, 2.25);
-      final k = (10.0 / (10.0 + variance)).clamp(0.20, 0.75);
-      p = Vector3(
-        p.x + k * (ned.x - p.x),
-        p.y + k * (ned.y - p.y),
-        p.z,
+      // North measurement: hRow[0] = 1.0
+      final hNorth = List<double>.filled(15, 0.0)..[0] = 1.0;
+      _updateScalarMeasurement(
+        hRow: hNorth,
+        innovation: ned.x - p.x,
+        rVariance: rPos,
+      );
+
+      // East measurement: hRow[1] = 1.0
+      final hEast = List<double>.filled(15, 0.0)..[1] = 1.0;
+      _updateScalarMeasurement(
+        hRow: hEast,
+        innovation: ned.y - p.y,
+        rVariance: rPos,
       );
     }
 
-    // Update forward speed if GNSS speed is reliable
-    if (speed != null && speed >= 0.5) {
+    // Velocity update from GNSS course-over-ground
+    if (speed != null && speed >= 0.5 && heading != null) {
+      final headingRad = heading * pi / 180.0;
+      final vnGnss = speed * cos(headingRad);
+      final veGnss = speed * sin(headingRad);
+      const rVel = 0.25; // ~0.5 m/s 1-sigma
+
+      final hVelN = List<double>.filled(15, 0.0)..[3] = 1.0;
+      _updateScalarMeasurement(
+        hRow: hVelN,
+        innovation: vnGnss - v.x,
+        rVariance: rVel,
+      );
+
+      final hVelE = List<double>.filled(15, 0.0)..[4] = 1.0;
+      _updateScalarMeasurement(
+        hRow: hVelE,
+        innovation: veGnss - v.y,
+        rVariance: rVel,
+      );
+
       forwardSpeed = speed;
+    } else if (speed != null && speed >= 0.5) {
+      // Speed only (no heading): scalar forward speed update along current yaw
       final yaw = q.toEuler().x;
-      v = Vector3(
-        forwardSpeed * cos(yaw),
-        forwardSpeed * sin(yaw),
-        0.0,
+      final hSpeed = List<double>.filled(15, 0.0)
+        ..[3] = cos(yaw)
+        ..[4] = sin(yaw);
+      final currentForward = v.x * cos(yaw) + v.y * sin(yaw);
+      _updateScalarMeasurement(
+        hRow: hSpeed,
+        innovation: speed - currentForward,
+        rVariance: 0.36,
       );
+      forwardSpeed = speed;
     }
 
-    // Align yaw with GNSS course over ground when vehicle is in steady forward motion
+    // Align yaw with GNSS course over ground when vehicle is moving steadily
     if (heading != null && speed != null && speed > 2.5) {
       final currentYawDeg = headingDegrees;
       final diffDeg = GeoUtils.wrapDegrees(heading - currentYawDeg);
       if (diffDeg.abs() < 45.0) {
-        final nudgeRad = (diffDeg * 0.12) * pi / 180.0;
-        final corrQ = Quaternion.fromEuler(nudgeRad, 0.0, 0.0);
-        q = q.multiply(corrQ).normalized();
+        final yawInnovRad = diffDeg * pi / 180.0;
+        final hYaw = List<double>.filled(15, 0.0)..[8] = 1.0;
+        const rYaw = (5.0 * pi / 180.0) * (5.0 * pi / 180.0);
+        _updateScalarMeasurement(
+          hRow: hYaw,
+          innovation: yawInnovRad,
+          rVariance: rYaw,
+        );
+      }
+    }
+  }
+
+  void _symmetrizeP() {
+    for (int i = 0; i < 15; i++) {
+      for (int j = i + 1; j < 15; j++) {
+        final avg = (_getP(i, j) + _getP(j, i)) * 0.5;
+        _setP(i, j, avg);
+        _setP(j, i, avg);
+      }
+      if (_getP(i, i) < 1e-8) {
+        _setP(i, i, 1e-8);
       }
     }
   }
@@ -228,25 +346,25 @@ class ESKF {
     required double innovation,
     required double rVariance,
   }) {
-    // PHt = P * H^T
-    final PHt = List<double>.filled(15, 0.0);
-    double HPHt = 0.0;
+    // pht = P * H^T
+    final pht = List<double>.filled(15, 0.0);
+    double hpht = 0.0;
     for (int i = 0; i < 15; i++) {
       double sum = 0.0;
       for (int j = 0; j < 15; j++) {
         sum += _getP(i, j) * hRow[j];
       }
-      PHt[i] = sum;
-      HPHt += hRow[i] * sum;
+      pht[i] = sum;
+      hpht += hRow[i] * sum;
     }
 
-    final S = HPHt + rVariance;
-    if (S.abs() < 1e-12) return;
-    final invS = 1.0 / S;
+    final s = hpht + rVariance;
+    if (s.abs() < 1e-12) return;
+    final invS = 1.0 / s;
 
     final dx = List<double>.filled(15, 0.0);
     for (int i = 0; i < 15; i++) {
-      dx[i] = PHt[i] * invS * innovation;
+      dx[i] = pht[i] * invS * innovation;
     }
 
     _injectErrorState(dx);
@@ -254,9 +372,10 @@ class ESKF {
     // Covariance update: P = P - K * (H * P) = P - (P * H^T) * (P * H^T)^T / S
     for (int i = 0; i < 15; i++) {
       for (int j = 0; j < 15; j++) {
-        _setP(i, j, _getP(i, j) - PHt[i] * PHt[j] * invS);
+        _setP(i, j, _getP(i, j) - pht[i] * pht[j] * invS);
       }
     }
+    _symmetrizeP();
   }
 
   void _injectErrorState(List<double> dx) {
