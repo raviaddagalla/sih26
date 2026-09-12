@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:latlong2/latlong.dart';
 
 import 'core/imu_sample.dart';
@@ -489,7 +490,7 @@ class IdrEngine {
         activeEnsembleRegime: 'ResGRU+XGBoost [Auto-Select]',
         denialZoneAlert: denialAlert,
         vehicleType: vehicleProfile.type,
-        gnssIntegrity: isForceBlocked ? GnssIntegrityStatus.suspectedJamming : GnssIntegrityStatus.valid,
+        gnssIntegrity: isForceBlocked ? GnssIntegrityStatus.suspectedJamming : GnssIntegrityStatus.healthy,
         onlineCalibrationScale: 1.002,
         onlineCalibrationBias: 0.015,
         isSevereDeceleration: false,
