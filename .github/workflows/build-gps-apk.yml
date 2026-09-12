@@ -1,0 +1,43 @@
+name: Build GPS Stealth APK
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app_gps/**'
+      - '.github/workflows/build-gps-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build GPS Stealth Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install dependencies
+        working-directory: ./app_gps
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ./app_gps
+        run: flutter build apk --release
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IDR_Navigation_GPS_Stealth_v1
+          path: app_gps/build/app/outputs/flutter-apk/app-release.apk
