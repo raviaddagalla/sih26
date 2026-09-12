@@ -59,6 +59,7 @@ class SessionLogger {
     _sink!.writeln(
       'timestamp_ms,rel_time_s,fused_lat,fused_lon,fused_speed_mps,fused_speed_kmh,fused_heading_deg,'
       'raw_gnss_lat,raw_gnss_lon,raw_gnss_speed_mps,raw_gnss_accuracy_m,raw_gnss_heading_deg,'
+      'ai_velocity_mps,online_calib_scale,online_calib_bias,'
       'nav_mode,position_uncertainty_m,is_stationary,gnss_force_blocked',
     );
 
@@ -107,6 +108,9 @@ class SessionLogger {
       rawSpeed != 0.0 ? rawSpeed.toStringAsFixed(2) : '',
       rawAcc < 500.0 ? rawAcc.toStringAsFixed(1) : '',
       rawHeading != 0.0 ? rawHeading.toStringAsFixed(1) : '',
+      telem.aiVelocity.toStringAsFixed(2),
+      telem.onlineCalibrationScale.toStringAsFixed(4),
+      telem.onlineCalibrationBias.toStringAsFixed(3),
       telem.navMode.name,
       telem.positionUncertainty.toStringAsFixed(2),
       telem.isStationary ? '1' : '0',

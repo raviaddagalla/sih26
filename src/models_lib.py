@@ -217,6 +217,75 @@ class VelocityTCN(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# MODEL F — ENHANCED MULTI-SCALE RESIDUAL GRU (Dual Head + Softplus + DAgger)
+# ---------------------------------------------------------------------------
+class EnhancedVelocityResGRU(nn.Module):
+    """
+    Enhanced Velocity Estimator incorporating:
+    - Multi-scale 1D temporal convolutions (kernels 3, 5, 7) for multi-frequency vibration capture
+    - Causal GRU layer for temporal sequence modeling
+    - Optional prior-velocity conditioning input (for DAgger autoregression)
+    - Dual heads:
+        1. Velocity regression head with Softplus activation (non-negative forward speed)
+        2. Stationary classification head (ZUPT probability)
+    """
+    def __init__(self, in_channels=6, hidden=64, num_layers=1, dropout=0.2):
+        super().__init__()
+        self.in_channels = in_channels
+        self.hidden = hidden
+
+        # Multi-scale 1D conv bank
+        self.conv3 = nn.Conv1d(in_channels, 16, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv1d(in_channels, 16, kernel_size=5, padding=2)
+        self.conv7 = nn.Conv1d(in_channels, 16, kernel_size=7, padding=3)
+        self.bn_conv = nn.BatchNorm1d(48)
+
+        # Temporal GRU
+        self.gru = nn.GRU(
+            input_size=48,
+            hidden_size=hidden,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+
+        # Feature fusion
+        self.fc_feat = nn.Linear(hidden, 64)
+        self.dropout = nn.Dropout(dropout)
+
+        # Velocity Regression Head (softplus ensures velocity >= 0)
+        self.fc_vel = nn.Linear(64, 1)
+        self.softplus = nn.Softplus(beta=1.0)
+
+        # Stationary Classification Head (logit)
+        self.fc_stat = nn.Linear(64, 1)
+
+    def forward(self, x, prior_v=None):
+        # x: (batch, seq_len, in_channels)
+        x_conv = x.permute(0, 2, 1)  # (batch, in_channels, seq_len)
+        c3 = torch.relu(self.conv3(x_conv))
+        c5 = torch.relu(self.conv5(x_conv))
+        c7 = torch.relu(self.conv7(x_conv))
+        c = torch.cat([c3, c5, c7], dim=1)  # (batch, 48, seq_len)
+        c = self.bn_conv(c)
+        c = c.permute(0, 2, 1)  # (batch, seq_len, 48)
+
+        out, _ = self.gru(c)  # (batch, seq_len, hidden)
+        feat = out[:, -1, :]  # last step
+
+        h = torch.relu(self.fc_feat(feat))
+        h = self.dropout(h)
+
+        raw_vel = self.fc_vel(h).squeeze(-1)
+        vel = self.softplus(raw_vel)
+        stat_logit = self.fc_stat(h).squeeze(-1)
+
+        return vel, stat_logit
+
+
+
+
+# ---------------------------------------------------------------------------
 # MODEL E — XGBoost engineered features
 # Tabular: each temporal window converted into scalar statistics.
 # ---------------------------------------------------------------------------

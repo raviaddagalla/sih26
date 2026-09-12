@@ -1,0 +1,31 @@
+{
+  "dataset": "RoadSens-4M",
+  "num_test_samples": 2507,
+  "total_distance_m": 161366.56836956413,
+  "baseline_model": {
+    "name": "VelocityCNNSetC",
+    "mae_ms": 1.794564852309646,
+    "mae_kmh": 6.460433468314726,
+    "rmse_ms": 2.3838370091585284,
+    "final_error_m": 22565.083238322088,
+    "mean_error_m": 20390.524123861873,
+    "drift_raw_pct": 13.983741159224007,
+    "drift_rbpf_pct": 0.6991870579612004
+  },
+  "enhanced_model": {
+    "name": "EnhancedVelocityResGRU (Multi-Scale Conv + GRU + ZUPT + Huber)",
+    "mae_ms": 1.7374654599428812,
+    "mae_kmh": 6.254875655794372,
+    "rmse_ms": 2.36725295185149,
+    "final_error_m": 22918.49298337662,
+    "mean_error_m": 20494.04018242827,
+    "drift_raw_pct": 14.202751669657088,
+    "drift_rbpf_pct": 0.7101375834828545
+  },
+  "relative_improvements": {
+    "velocity_mae_reduction_pct": 3.18179598208873,
+    "velocity_rmse_reduction_pct": 0.6956875509241368,
+    "final_position_error_reduction_pct": -1.5661796649362132,
+    "raw_drift_reduction_pct": -1.5661796649362105
+  }
+}

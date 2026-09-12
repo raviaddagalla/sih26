@@ -184,9 +184,18 @@ class IdrEngine {
       _isSevereDecel = false;
     }
 
-    // If ESKF is not yet initialized, accumulate stationary gravity for calibration
+    // Continuous Gravity Alignment: accumulate samples until Phase 1 (Gravity) is locked
+    if (!alignment.isGravityCalibrated) {
+      if (preprocessor.isStationary || _totalDistance < 2.0) {
+        alignment.addStationarySample(Vector3(rawSample.ax, rawSample.ay, rawSample.az));
+      } else {
+        // If already moving, filtered accelerometer isolates the static gravity vector
+        alignment.addStationarySample(Vector3(filteredSample.ax, filteredSample.ay, filteredSample.az));
+      }
+    }
+
+    // If ESKF is not yet initialized, wait for first valid GNSS fix
     if (_eskf == null) {
-      alignment.addStationarySample(Vector3(rawSample.ax, rawSample.ay, rawSample.az));
       return;
     }
 
@@ -204,10 +213,11 @@ class IdrEngine {
     _eskf!.predict(dt, accel, gyro);
 
     // Zero-Velocity Update if vehicle is stationary at a red light/parking
-    if (preprocessor.isStationary) {
+    if (preprocessor.isStationary || velocityEnsemble.lastStationaryScore >= 0.50) {
       _eskf!.updateZupt();
     }
   }
+
 
   void _processGnss(GnssSample gnss) {
     // If ESKF not initialized yet, use first valid GNSS fix as origin
@@ -242,8 +252,8 @@ class IdrEngine {
 
     // Only update ESKF if fix passes integrity checks
     if (isFixValid && _eskf != null && gnss.isAvailable && (gnss.latitude != 0.0 || gnss.longitude != 0.0)) {
-      // Dynamic yaw correlation during motion
-      if (gnss.speed > 3.0) {
+      // Dynamic yaw correlation during motion (> 1.8 m/s / 6.5 km/h)
+      if (gnss.speed > 1.8) {
         alignment.updateYawOffset(gnss.heading, _eskf!.headingDegrees, gnss.speed);
       }
 
@@ -386,10 +396,10 @@ class IdrEngine {
     int calibProgress = 100;
     if (!isDemo) {
       if (!alignment.isGravityCalibrated) {
-        calibProgress = ((alignment.stationarySampleCount / 50.0) * 40).clamp(0, 40).toInt();
+        calibProgress = ((alignment.stationarySampleCount / 50.0) * 50).clamp(0, 50).toInt();
       } else if (!alignment.isYawCalibrated) {
-        final yawProg = ((alignment.yawSampleCount / 5.0) * 60).clamp(0, 60).toInt();
-        calibProgress = (40 + yawProg).clamp(0, 100);
+        final yawProg = ((alignment.yawSampleCount / 3.0) * 50).clamp(0, 50).toInt();
+        calibProgress = (50 + yawProg).clamp(0, 100);
       } else {
         calibProgress = 100;
       }

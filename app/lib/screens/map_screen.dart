@@ -792,21 +792,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
-          // 4b. Calibration & Alignment Onboarding Overlay (during initial live driving until converged)
-          if (isNavigating && !_isDemoMode && !_dismissedCalibrationNotice)
-            Positioned(
-              left: 16,
-              right: 16,
-              top: MediaQuery.of(context).padding.top +
-                  (_state.route != null && _state.route!.steps.isNotEmpty ? 220 : 96),
-              child: ValueListenableBuilder<NavigationTelemetry?>(
-                valueListenable: _telemetryNotifier,
-                builder: (context, telem, _) {
-                  if (telem == null) return const SizedBox.shrink();
-                  return _buildCalibrationOverlay(telem);
-                },
-              ),
-            ),
 
           // 5. Map Action Controls (Compass, Recenter, My Location, Blackout Toggle)
           Positioned(
@@ -953,6 +938,22 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               right: 16,
               bottom: 170,
               child: _offRouteBanner(),
+            ),
+
+          // 10. Calibration & Alignment Onboarding Overlay (Top z-index, right: 76 avoids collision with right-side map action controls)
+          if (isNavigating && !_isDemoMode && !_dismissedCalibrationNotice)
+            Positioned(
+              left: 16,
+              right: 76,
+              top: MediaQuery.of(context).padding.top +
+                  (_state.route != null && _state.route!.steps.isNotEmpty ? 220 : 96),
+              child: ValueListenableBuilder<NavigationTelemetry?>(
+                valueListenable: _telemetryNotifier,
+                builder: (context, telem, _) {
+                  if (telem == null) return const SizedBox.shrink();
+                  return _buildCalibrationOverlay(telem);
+                },
+              ),
             ),
         ],
       ),
@@ -1552,19 +1553,19 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     final String subtitle = isFullyDone
         ? 'Vehicle orientation aligned • ESKF 100 Hz fusion active'
         : (isGravityDone
-            ? 'Drive > 10 km/h for a few seconds to lock vehicle yaw (${telem.calibrationProgressPercent}%)'
-            : 'Sampling stationary gravity vector & zero-velocity gyro bias (${telem.calibrationProgressPercent}%)');
+            ? 'Drive > 6 km/h to lock vehicle yaw (${telem.calibrationProgressPercent}%)'
+            : 'Hold vehicle still for 0.5s to sample gravity (${telem.calibrationProgressPercent}%)');
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.94),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: accentColor.withValues(alpha: 0.45), width: 1.2),
+            border: Border.all(color: accentColor.withValues(alpha: 0.50), width: 1.2),
             boxShadow: [
               BoxShadow(
                 color: accentColor.withValues(alpha: 0.20),
@@ -1596,12 +1597,29 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     ),
                   ),
                   const Spacer(),
-                  GestureDetector(
-                    onTap: () {
-                      HapticFeedback.lightImpact();
-                      setState(() => _dismissedCalibrationNotice = true);
-                    },
-                    child: const Icon(Icons.close_rounded, size: 18, color: Color(0xFF64748B)),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(18),
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        setState(() => _dismissedCalibrationNotice = true);
+                      },
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.12),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.close_rounded,
+                          size: 18,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -1624,7 +1642,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                           title,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 15,
+                            fontSize: 14.5,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -1644,14 +1662,43 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
               if (!isFullyDone) ...[
                 const SizedBox(height: 10),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: (telem.calibrationProgressPercent / 100.0).clamp(0.05, 1.0),
-                    minHeight: 4,
-                    backgroundColor: Colors.white.withValues(alpha: 0.10),
-                    valueColor: AlwaysStoppedAnimation<Color>(accentColor),
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: (telem.calibrationProgressPercent / 100.0).clamp(0.05, 1.0),
+                          minHeight: 5,
+                          backgroundColor: Colors.white.withValues(alpha: 0.12),
+                          valueColor: AlwaysStoppedAnimation<Color>(accentColor),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        setState(() => _dismissedCalibrationNotice = true);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'Dismiss',
+                          style: TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ],

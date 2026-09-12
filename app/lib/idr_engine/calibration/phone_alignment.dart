@@ -73,11 +73,11 @@ class PhoneAlignment {
     _updateCombinedRotation();
   }
 
-  /// Correlates GPS heading with phone integrated yaw during forward motion (>3 m/s).
+  /// Correlates GPS heading with phone integrated yaw during forward motion (>1.8 m/s).
   /// Features adaptive discontinuity / phone bump detection: if heading residual
   /// jumps by >25° persistently, the buffer is cleared to recalibrate rapidly in a burst.
   void updateYawOffset(double gpsHeadingDeg, double phoneYawDeg, double speed) {
-    if (speed < 3.0) return; // Only calibrate yaw when moving steadily forward
+    if (speed < 1.8) return; // Calibrate yaw during any forward motion (> 6.5 km/h)
 
     final diff = GeoUtils.wrapDegrees(gpsHeadingDeg - phoneYawDeg);
 
